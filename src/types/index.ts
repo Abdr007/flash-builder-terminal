@@ -1,5 +1,5 @@
 /**
- * Core types for flash-magic-terminal.
+ * Core types for flash-builder-terminal.
  *
  * Single-mode CLI — only magic-trading paths exist. Live + simulation
  * are out of scope (use the bolt-terminal v1 CLI for those).

@@ -2321,7 +2321,7 @@ export class MagicTerminal {
       return;
     }
     process.stdout.write(`  ${c.long('✔')}  ${c.muted('Recorded.')} ${c.faint(path)}\n`);
-    process.stdout.write(`  ${c.muted('Attach this file when reporting bugs at:')} ${c.cyan('https://github.com/Abdr007/flash-magic-terminal/issues')}\n\n`);
+    process.stdout.write(`  ${c.muted('Attach this file when reporting bugs at:')} ${c.cyan('https://github.com/Abdr007/flash-builder-terminal/issues')}\n\n`);
   }
 
   /**

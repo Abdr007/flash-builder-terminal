@@ -1,7 +1,7 @@
 /**
  * Programmatic SDK entry point for the Flash Magic Terminal.
  *
- *     import { createMagicSession, TradeSide } from 'flash-magic-terminal';
+ *     import { createMagicSession, TradeSide } from 'flash-builder-terminal';
  *
  *     const magic = await createMagicSession({
  *       walletKeypairPath: '~/.config/solana/id.json',

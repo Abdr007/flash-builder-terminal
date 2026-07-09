@@ -37,7 +37,7 @@ import { renderHero } from './cli/banner.js';
 import { COMMAND_ALIASES } from './cli/interpreter.js';
 
 function printHelp(): void {
-  process.stdout.write(`${c.teal.bold('flash-magic-terminal')} ${c.muted(`v${VERSION}`)} ${c.muted('— sub-second perpetuals on MagicBlock ER')}
+  process.stdout.write(`${c.teal.bold('flash-builder-terminal')} ${c.muted(`v${VERSION}`)} ${c.muted('— sub-second perpetuals on MagicBlock ER')}
 
 ${c.cyan('USAGE')}
   ${c.teal.bold('magic')}                          launch the interactive REPL
@@ -62,7 +62,7 @@ ${c.cyan('TRADING (one-shot examples)')}
 ${c.cyan('AGENT MODE  (https://no-dna.org)')}
   ${c.teal('NO_DNA=1 magic markets')}         JSON output to stdout, errors to stderr
   ${c.teal('NO_DNA=1 magic portfolio')}       no banner, no prompts, debug-verbose
-  ${c.muted('SDK:')}  ${c.teal("import { createMagicSession } from 'flash-magic-terminal/sdk'")}
+  ${c.muted('SDK:')}  ${c.teal("import { createMagicSession } from 'flash-builder-terminal/sdk'")}
   ${c.muted('Skill:')} ${c.faint('SKILL.md (Claude Code / Cursor)')}
 
 ${c.cyan('SAFETY')}

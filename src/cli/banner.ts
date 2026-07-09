@@ -74,7 +74,7 @@ export async function renderHero(): Promise<string> {
     return JSON.stringify({
       ts: new Date().toISOString(),
       kind: 'banner',
-      product: 'flash-magic-terminal',
+      product: 'flash-builder-terminal',
       version: BANNER_VERSION,
     }) + '\n';
   }
