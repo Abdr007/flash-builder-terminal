@@ -2,7 +2,7 @@
   "name": "flash-builder-terminal",
   "version": "0.5.0",
   "description": "Flash Magic Terminal packaged against the Flash Trade V2 Builder API, with a dedicated flash-builder launcher.",
-  "private": true,
+  "private": false,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/sdk.d.ts",
