@@ -2,6 +2,14 @@
   "name": "flash-builder-terminal",
   "version": "0.5.0",
   "description": "Flash Magic Terminal packaged against the Flash Trade V2 Builder API, with a dedicated flash-builder launcher.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abdr007/flash-builder-terminal.git"
+  },
+  "homepage": "https://github.com/Abdr007/flash-builder-terminal#readme",
+  "bugs": {
+    "url": "https://github.com/Abdr007/flash-builder-terminal/issues"
+  },
   "private": false,
   "publishConfig": {
     "access": "public"
