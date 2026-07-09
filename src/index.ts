@@ -30,82 +30,106 @@ import { createInterface } from 'readline';
 import { loadConfig } from './config/index.js';
 import { WalletManager } from './wallet/walletManager.js';
 import { MagicTerminal } from './cli/terminal.js';
-import { c } from './cli/magic-theme.js';
+import { c, DIAMOND } from './cli/magic-theme.js';
 import { initLogger, getLogger, LogLevel } from './utils/logger.js';
 import { setupWallet } from './cli/wallet-flows.js';
 import { renderHero } from './cli/banner.js';
 import { COMMAND_ALIASES } from './cli/interpreter.js';
 
 function printHelp(): void {
-  process.stdout.write(`${c.teal.bold('flash-builder-terminal')} ${c.muted(`v${VERSION}`)} ${c.muted('— sub-second perpetuals on MagicBlock ER')}
+  const W = 64; // rule width
+  const CW = 30; // command column
+  const EW = 30; // env-var column
+  const rule = `  ${c.faint('─'.repeat(W))}`;
+  const sec = (t: string): string => `\n  ${c.cyan.bold(t)}`;
+  // command → description row (command padded plain, then tinted)
+  const row = (cmd: string, desc: string): string => `  ${c.teal(cmd.padEnd(CW))}${c.muted(desc)}`;
+  // env var → description row (indented under a group)
+  const env = (name: string, desc: string): string =>
+    `    ${name.length >= EW ? name + ' ' : name.padEnd(EW)}${c.muted(desc)}`;
+  const grp = (t: string): string => `  ${c.muted(t)}`;
 
-${c.cyan('USAGE')}
-  ${c.teal.bold('magic')}                          launch the interactive REPL
-  ${c.teal.bold('magic <verb> [args]')}            run one command and exit (one-shot)
-  ${c.teal.bold('magic --help')}                   show this help
-  ${c.teal.bold('magic --version')}                print version
-  ${c.muted('(`flash-magic` is also installed as an alias for systems where `magic` collides — ImageMagick, etc.)')}
+  const lines: string[] = [
+    '',
+    `  ${DIAMOND}  ${c.teal.bold('FLASH BUILDER TERMINAL')}  ${c.muted(`v${VERSION}`)}`,
+    `     ${c.muted('Sub-second perpetuals on MagicBlock ER · Flash Trade V2')}`,
+    rule,
 
-${c.cyan('FIRST RUN')}
-  ${c.teal('magic init')}                     bootstrap ~/.magic/.env (no wallet needed)
-  ${c.teal('magic env')}                      show env-file path + current values (masked)
-  ${c.teal('magic doctor')}                   full health probe — RPC, ER, oracle, wallet, SDK
+    sec('USAGE'),
+    row('magic', 'open the interactive terminal'),
+    row('magic <command> [args]', 'run one command and exit'),
+    row('magic --help · --version', 'this help · print version'),
+    `  ${c.faint('alias `flash-magic` / `flash-builder` if `magic` collides (ImageMagick, etc.)')}`,
 
-${c.cyan('TRADING (one-shot examples)')}
-  ${c.teal('magic markets')}                  list every tradable market
-  ${c.teal('magic price SOL')}                live oracle price
-  ${c.teal('magic portfolio')}                positions, PnL, vault balance
-  ${c.teal('magic open SOL long 5 2')}        open 2x long, 5 USDC collateral
-  ${c.teal('magic close SOL long')}           close a position
-  ${c.teal('magic deposit USDC 50')}          fund the basket
+    sec('GET STARTED'),
+    row('magic init', 'create ~/.magic/.env (no wallet needed)'),
+    row('magic rpc set <https://…>', 'set a paid RPC (Helius / QuickNode / Triton)'),
+    row('magic doctor', 'health probe — RPC · ER · oracle · wallet · SDK'),
+    row('magic deposit USDC 50', 'fund your Flash account'),
 
-${c.cyan('AGENT MODE  (https://no-dna.org)')}
-  ${c.teal('NO_DNA=1 magic markets')}         JSON output to stdout, errors to stderr
-  ${c.teal('NO_DNA=1 magic portfolio')}       no banner, no prompts, debug-verbose
-  ${c.muted('SDK:')}  ${c.teal("import { createMagicSession } from 'flash-builder-terminal/sdk'")}
-  ${c.muted('Skill:')} ${c.faint('SKILL.md (Claude Code / Cursor)')}
+    sec('TRADE') + `   ${c.muted('(prefix with `magic` to run one-shot; or type inside the REPL)')}`,
+    row('long SOL 5 2x', 'open · $5 collateral, 2x leverage'),
+    row('short BTC 100 3x', 'open a short'),
+    row('close SOL long', 'close a position  ·  close-all closes every one'),
+    row('reverse SOL long', 'flip side, collateral carries over'),
+    row('add / remove SOL long 20', 'adjust collateral on an open position'),
+    row('limit SOL long 80 50 2x', 'resting limit order'),
+    row('set SOL long tp 120 sl 60', 'attach take-profit / stop-loss'),
 
-${c.cyan('SAFETY')}
-  ${c.teal('magic kill [reason]')}            persistent kill switch — refuse signing across restarts
-  ${c.teal('magic resume')}                   re-enable signing
+    sec('MARKET DATA'),
+    row('markets [category]', 'tradable markets, grouped, with leverage caps'),
+    row('price SOL', 'live oracle price'),
+    row('portfolio · dashboard', 'positions & PnL · full account overview'),
+    row('monitor', 'live market TUI — prices, OI, L/S (q to quit)'),
 
-${c.cyan('ENVIRONMENT')}
-  ${c.muted('Network')}
-    MAGIC_NETWORK                ${c.faint('mainnet-beta')} (default) | ${c.faint('devnet')}
-    MAGIC_POOL_NAME              ${c.faint('Pool.0')} (mainnet) / ${c.faint('Pool.1')} (devnet)
-    MAGIC_FLASH_API_URL          Flash Trade V2 Builder API ${c.muted('(default: https://flashapi.trade)')}
-    MAGIC_RPC_URL                ER router URL
-    MAGIC_L1_RPC_URL             L1 RPC ${c.muted('(use Helius/QuickNode for production)')}
-    MAGIC_ALLOW_INSECURE_RPC     ${c.faint('=1')} to allow http://localhost (dev only)
-  ${c.muted('Wallet')}
-    MAGIC_WALLET_PATH            keypair JSON path ${c.muted('(default: ~/.config/solana/id.json)')}
-    MAGIC_WITHDRAW_FEE_PAYER_PATH separate V2 withdrawal fee payer keypair ${c.muted('(optional)')}
-  ${c.muted('Trading')}
-    MAGIC_AUTO_CONFIRM           ${c.faint('false')} (default) — show Y/N preview before signing; true skips it
-    MAGIC_SLIPPAGE_PERCENT       ${c.faint('0.5')} (default) — client-side slippage cap on market orders (%)
-    MAGIC_FAST_CONFIRM           ${c.faint('true')} (default) — ER ixs return on submit
-    COMPUTE_UNIT_PRICE           microlamports for L1 priority fee ${c.muted('(default: 50000)')}
-  ${c.muted('Caps  (0 = unlimited; recommended for agents)')}
-    MAX_COLLATERAL_PER_TRADE     hard cap on collateral per trade
-    MAX_POSITION_SIZE            hard cap on size
-    MAX_LEVERAGE                 hard cap on leverage
-    MAX_TRADES_PER_MINUTE        rate limit ${c.muted('(default: 10)')}
-    MIN_DELAY_BETWEEN_TRADES_MS  min spacing between signs ${c.muted('(default: 1000)')}
-  ${c.muted('Logs / Agent')}
-    MAGIC_LOG_LEVEL              ${c.faint('debug | info | warn | error')}
-    MAGIC_LOG_FORMAT             ${c.faint('text | json')}
-    NO_DNA                       ${c.faint('=1')} — agent mode: JSON, no prompts, no ASCII
+    sec('SAFETY'),
+    row('kill [reason]', 'persistent kill switch — refuse signing (survives restart)'),
+    row('resume', 're-enable signing'),
+    `  ${c.faint('Every market order carries a slippage cap; trades preview before signing.')}`,
 
-${c.cyan('FILES')}
-  ${c.faint('~/.magic/.env')}                  user-global env (created by ${c.cyan('magic init')})
-  ${c.faint('~/.magic/config.json')}           rpc + persisted config (managed by ${c.cyan('rpc set/add/remove')})
-  ${c.faint('~/.magic/magic.log')}             rotating debug log (10 MB)
-  ${c.faint('~/.magic/signing-audit.log')}     append-only signing audit
-  ${c.faint('~/.magic/magic-history.jsonl')}   trade journal
+    sec('AGENT MODE') + `   ${c.faint('https://no-dna.org')}`,
+    row('NO_DNA=1 magic <command>', 'JSON to stdout, errors to stderr, no prompts'),
+    `  ${c.muted('SDK  ')}${c.teal("import { createMagicSession } from 'flash-builder-terminal/sdk'")}`,
+    `  ${c.muted('Skill')} ${c.faint('SKILL.md (Claude Code / Cursor)')}`,
 
-${c.muted('Inside the REPL, type')} ${c.teal.bold('help')} ${c.muted('for the full command reference.')}
+    sec('ENVIRONMENT') + `   ${c.faint('set in ~/.magic/.env or the shell')}`,
+    grp('Network'),
+    env('MAGIC_NETWORK', `${c.faint('mainnet-beta')} (default) | ${c.faint('devnet')}`),
+    env('MAGIC_POOL_NAME', `${c.faint('Pool.0')} mainnet · ${c.faint('Pool.1')} devnet`),
+    env('MAGIC_RPC_URL', 'ER router URL'),
+    env('MAGIC_L1_RPC_URL', 'L1 RPC (use Helius/QuickNode for production)'),
+    env('MAGIC_FLASH_API_URL', 'V2 Builder API (default: https://flashapi.trade)'),
+    env('MAGIC_ALLOW_INSECURE_RPC', '=1 to allow http://localhost (dev only)'),
+    grp('Wallet'),
+    env('MAGIC_WALLET_PATH', 'keypair JSON (default: ~/.config/solana/id.json)'),
+    env('MAGIC_WITHDRAW_FEE_PAYER_PATH', 'separate V2 withdrawal fee payer (optional)'),
+    grp('Trading'),
+    env('MAGIC_AUTO_CONFIRM', `${c.faint('false')} (default) — preview before signing; true skips it`),
+    env('MAGIC_SLIPPAGE_PERCENT', `${c.faint('0.5')} (default) — client-side slippage cap (%)`),
+    env('MAGIC_FAST_CONFIRM', `${c.faint('true')} (default) — ER ixs return on submit`),
+    env('COMPUTE_UNIT_PRICE', 'L1 priority fee, microlamports (default: 50000)'),
+    grp('Caps  (0 = unlimited)'),
+    env('MAX_COLLATERAL_PER_TRADE', 'hard cap on collateral per trade'),
+    env('MAX_POSITION_SIZE', 'hard cap on position size'),
+    env('MAX_LEVERAGE', 'hard cap on leverage'),
+    env('MAX_TRADES_PER_MINUTE', 'rate limit (default: 10)'),
+    env('MIN_DELAY_BETWEEN_TRADES_MS', 'min spacing between signs (default: 1000)'),
+    grp('Logs / Agent'),
+    env('MAGIC_LOG_LEVEL', `${c.faint('debug | info | warn | error')}`),
+    env('NO_DNA', '=1 — agent mode: JSON, no prompts, no ASCII'),
 
-`);
+    sec('FILES') + `   ${c.faint('~/.magic/')}`,
+    env('.env', 'user-global env (created by `magic init`)'),
+    env('config.json', 'rpc + persisted config (`rpc set/add/remove`)'),
+    env('signing-audit.log', 'append-only signing audit trail'),
+    env('magic-history.jsonl', 'trade journal'),
+
+    rule,
+    `  ${c.muted('Inside the terminal, type')} ${c.teal.bold('help')} ${c.muted('for the full command reference.')}`,
+    '',
+    '',
+  ];
+  process.stdout.write(lines.join('\n'));
 }
 
 /**
