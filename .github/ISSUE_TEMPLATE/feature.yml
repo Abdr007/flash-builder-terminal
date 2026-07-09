@@ -1,0 +1,40 @@
+name: ✨ Feature request
+description: Suggest a new command, integration, or UX improvement.
+title: "[feat]: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Lead with the use case, not the solution.
+      placeholder: When I run a strategy across N symbols, I want a single command that opens the same trade across all of them.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape (optional)
+      description: If you have a syntax in mind, sketch it.
+      placeholder: |
+        magic open SOL,BTC,ETH long 5 2x
+        # → opens 5 USDC × 2x long on SOL, BTC, ETH back-to-back, respecting rate limit
+      render: shell
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does this live?
+      options:
+        - REPL command
+        - One-shot CLI flag
+        - SDK method
+        - Agent (NO_DNA) shape
+        - Other / not sure
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you've tried
+      description: What can you do today that almost solves this?

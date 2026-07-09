@@ -1,0 +1,55 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderCard > renders a card with a sentinel-aware "no link" url 1`] = `
+"
+  ▌  WITHDRAWN                                                         USDC
+  ▌
+  ▌  Amount        $25.00
+
+     → (no link — recovered via chain-truth check)
+"
+`;
+
+exports[`renderCard > renders a partial-failure (settle) card 1`] = `
+"
+  ▌  SETTLE PARTIAL                               ⬗  2/3 settled · 1 failed
+  ▌
+  ▌  USDC          https://solscan.io/tx/aaa
+  ▌  SOL           https://solscan.io/tx/bbb
+  ▌  BTC           ✖ AccountNotInitialized
+"
+`;
+
+exports[`renderCard > renders a single-column open-trade card 1`] = `
+"
+  ▌  POSITION OPENED                                             SOL · LONG
+  ▌
+  ▌  Side          LONG
+  ▌  Leverage      2.0x
+  ▌  Size          $10.00
+  ▌  Collateral    $5.00
+  ▌  Entry         $200.00
+
+     → https://solscan.io/tx/abc123
+"
+`;
+
+exports[`renderCard > renders a two-column dashboard-style card 1`] = `
+"
+  ▌  VAULT SUMMARY                                                 overview
+  ▌
+  ▌  USDC          $1,250.00              SOL           5.50 SOL
+  ▌  BTC           0.025 BTC              Total         $2,950.00
+"
+`;
+
+exports[`renderCard > renders a warn-toned card with latency footer 1`] = `
+"
+  ▌  TRIGGERS SET                                                SOL · LONG
+  ▌
+  ▌  TP            $100.00
+  ▌  SL            $70.00
+  ▌
+  ▌  ⚡ 0.25s
+"
+`;

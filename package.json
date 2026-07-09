@@ -1,0 +1,108 @@
+{
+  "name": "flash-builder-terminal",
+  "version": "0.5.0",
+  "description": "Flash Magic Terminal packaged against the Flash Trade V2 Builder API, with a dedicated flash-builder launcher.",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/sdk.d.ts",
+  "bin": {
+    "flash-builder": "dist/index.js",
+    "magic": "dist/index.js",
+    "flash-magic": "dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js",
+      "default": "./dist/sdk.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js",
+      "default": "./dist/sdk.js"
+    },
+    "./cli": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    ".env.example",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SKILL.md"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "test": "vitest run --exclude 'test/integration/**'",
+    "test:integration": "vitest run test/integration",
+    "test:property": "vitest run test/property",
+    "smoke:local": "scripts/smoke-local.sh",
+    "smoke:local:writes": "scripts/smoke-local.sh --writes",
+    "publish:gh": "scripts/publish-gh-packages.sh",
+    "format": "prettier --write src/",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "flash-trade",
+    "magic-block",
+    "ephemeral-rollups",
+    "solana",
+    "perpetuals",
+    "perps",
+    "cli",
+    "trading",
+    "terminal",
+    "bloomberg",
+    "pyth",
+    "defi",
+    "web3"
+  ],
+  "author": "Flash Builder Terminal contributors",
+  "license": "MIT",
+  "overrides": {
+    "bs58": "$bs58"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@flash_trade/magic-trade-client": "^1.0.23",
+    "@solana/spl-token": "0.4.14",
+    "@solana/web3.js": "1.98.4",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "chalk": "^5.6.2",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^16.4.7",
+    "figlet": "^1.11.0",
+    "gradient-string": "^3.0.0",
+    "ora": "^9.4.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/bn.js": "^5.2.0",
+    "@types/figlet": "^1.7.0",
+    "@types/node": "^22.13.0",
+    "@typescript-eslint/eslint-plugin": "^8.43.0",
+    "@typescript-eslint/parser": "^8.43.0",
+    "eslint": "^9.0.0",
+    "fast-check": "^4.7.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.59.2",
+    "vitest": "^3.2.4"
+  }
+}

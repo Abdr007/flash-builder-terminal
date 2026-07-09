@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build · Typecheck · Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      matrix:
+        node: [22.x]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Node ${{ matrix.node }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Build
+        run: npm run build
+
+      - name: Test (unit)
+        run: npm test
+
+      - name: Test (property · money math)
+        run: npm run test:property
+
+  integration:
+    name: Integration · Devnet lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    # Skip on PRs from forks (where secrets aren't available) and skip when
+    # the maintainer hasn't configured the devnet secret. The job exits
+    # cleanly in either case so PR checks aren't blocked.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Use Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The integration test self-skips when the devnet keypair / RPC
+      # secrets aren't set (e.g. PRs from forks, or before the maintainer
+      # configures the secret), so the job exits cleanly without blocking
+      # checks.
+      #
+      # WRITES gate: enabled automatically on `release/**` branches so
+      # cutting a release runs a real money-moving smoke (deposit → open
+      # → close → withdraw) against devnet. Master/main / feature
+      # branches stay on read-only mode to keep CI cheap and avoid
+      # burning the test wallet's faucet on every PR.
+      - name: Test (integration · devnet)
+        env:
+          MAGIC_TEST_KEYPAIR_BASE58: ${{ secrets.MAGIC_TEST_KEYPAIR_BASE58 }}
+          MAGIC_TEST_DEVNET_RPC: ${{ secrets.MAGIC_TEST_DEVNET_RPC }}
+          MAGIC_TEST_DEVNET_ER: ${{ secrets.MAGIC_TEST_DEVNET_ER }}
+          MAGIC_TEST_RUN_WRITES: ${{ startsWith(github.ref, 'refs/heads/release/') && '1' || '0' }}
+        run: npm run test:integration

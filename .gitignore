@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Local env / secrets — never commit
+.env
+.env.local
+.env.*.local
+# Project-local npm auth (written by scripts/publish-gh-packages.sh)
+.npmrc
+
+# Wallet keypairs (in case anyone drops one in the project dir)
+*.keypair.json
+*-keypair.json
+id*.json
+wallet*.json
+
+# User runtime state (lives in ~/.magic; ignore here in case of symlink/copy)
+.magic/
+volume-events.jsonl
+
+# Logs
+*.log
+logs/
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / coverage
+coverage/
+.nyc_output/

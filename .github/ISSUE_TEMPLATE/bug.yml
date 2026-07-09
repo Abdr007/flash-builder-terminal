@@ -1,0 +1,54 @@
+name: 🐛 Bug report
+description: Something broke. Help us reproduce.
+title: "[bug]: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report. The fastest path to a fix is a clean reproduction
+        plus the env fingerprint produced by `magic feedback`.
+
+        **Security issues — do NOT file here.** Follow the disclosure policy in
+        [`SECURITY.md`](https://github.com/Abdr007/flash-magic-terminal/blob/master/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: One paragraph max. What did you do, what did you expect, what happened instead?
+      placeholder: I ran `magic open SOL long 5 2` and got "ProgramAccountNotFound" instead of an open trade.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal repro
+      description: Smallest sequence of commands that surfaces the bug.
+      render: shell
+      placeholder: |
+        magic init --quick
+        magic markets        # works
+        magic open SOL long 5 2  # boom
+    validations:
+      required: true
+
+  - type: textarea
+    id: feedback-log
+    attributes:
+      label: Feedback fingerprint
+      description: |
+        Paste the most recent line from `~/.magic/feedback.jsonl` (run `magic feedback "describing the bug"`
+        first to capture it). This contains version + network + RPC host + Node version — no secrets.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: extras
+    attributes:
+      label: Anything else?
+      description: Logs from `~/.magic/magic.log` (last 50 lines), screenshots of the broken card, etc.
+    validations:
+      required: false

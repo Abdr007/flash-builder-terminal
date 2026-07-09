@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Security disclosure
+    url: https://github.com/Abdr007/flash-magic-terminal/blob/master/SECURITY.md
+    about: Vulnerabilities — follow the responsible disclosure policy. Do NOT file a public issue.
+  - name: 💬 Question / discussion
+    url: https://github.com/Abdr007/flash-magic-terminal/discussions
+    about: General questions, design feedback, "is this the right tool for me" — open a Discussion.
+  - name: ⚡ Flash Trade protocol questions
+    url: https://flash.trade
+    about: For questions about the underlying perp protocol itself.
+  - name: 🪄 MagicBlock ER questions
+    url: https://www.magicblock.gg
+    about: For questions about ephemeral rollups.

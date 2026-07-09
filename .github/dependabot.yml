@@ -1,0 +1,56 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      types:
+        patterns:
+          - "@types/*"
+      lint:
+        patterns:
+          - "eslint*"
+          - "@typescript-eslint/*"
+          - "prettier"
+    ignore:
+      # SDK + chain deps: allow patches and minors (auto-PR), block majors until audited
+      - dependency-name: "@flash_trade/magic-trade-client"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@magicblock-labs/ephemeral-rollups-sdk"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@solana/web3.js"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@solana/spl-token"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@coral-xyz/anchor"
+        update-types: ["version-update:semver-major"]
+      # Pinned to match the SDK dependency chain (bs58 6 breaks @solana/web3.js 1.x)
+      - dependency-name: "bs58"
+        update-types: ["version-update:semver-major"]
+      # Stay on TypeScript 5.x — TS 6 is a major release with breakages we haven't audited
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # Engines is Node >=22, so @types/node should track the 22.x line
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # ESLint v10, vitest v4, dotenv v17 are major bumps that need a deliberate audit
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@eslint/js"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "dotenv"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - ci
