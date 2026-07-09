@@ -14,16 +14,16 @@
 
 ### The same Flash Magic Terminal, packaged around the latest Flash Trade V2 Builder API.
 
-<sub>Bloomberg-grade · sub-200 ms confirms · 198 tests · v0.2.0 · Node 22+</sub>
+<sub>Bloomberg-grade · sub-200 ms confirms · 295 tests · v0.5.0 · Node 22+</sub>
 
-[![npm](https://img.shields.io/npm/v/flash-magic-terminal?color=14b8a6&label=npm&style=flat-square)](https://www.npmjs.com/package/flash-magic-terminal)
-[![downloads](https://img.shields.io/npm/dw/flash-magic-terminal?color=14b8a6&style=flat-square)](https://www.npmjs.com/package/flash-magic-terminal)
-[![CI](https://img.shields.io/github/actions/workflow/status/Abdr007/flash-magic-terminal/ci.yml?branch=master&label=CI&style=flat-square)](https://github.com/Abdr007/flash-magic-terminal/actions/workflows/ci.yml)
-[![bundle](https://img.shields.io/bundlephobia/min/flash-magic-terminal?color=eab308&style=flat-square)](https://bundlephobia.com/package/flash-magic-terminal)
-[![License: MIT](https://img.shields.io/npm/l/flash-magic-terminal?color=06b6d4&style=flat-square)](LICENSE)
-[![Node](https://img.shields.io/node/v/flash-magic-terminal?color=eab308&style=flat-square)](package.json)
-[![issues](https://img.shields.io/github/issues/Abdr007/flash-magic-terminal?color=ff7a59&style=flat-square)](https://github.com/Abdr007/flash-magic-terminal/issues)
-[![commit](https://img.shields.io/github/last-commit/Abdr007/flash-magic-terminal?color=06b6d4&style=flat-square)](https://github.com/Abdr007/flash-magic-terminal/commits/master)
+[![npm](https://img.shields.io/npm/v/flash-builder-terminal?color=14b8a6&label=npm&style=flat-square)](https://www.npmjs.com/package/flash-builder-terminal)
+[![downloads](https://img.shields.io/npm/dw/flash-builder-terminal?color=14b8a6&style=flat-square)](https://www.npmjs.com/package/flash-builder-terminal)
+[![CI](https://img.shields.io/github/actions/workflow/status/Abdr007/flash-builder-terminal/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/Abdr007/flash-builder-terminal/actions/workflows/ci.yml)
+[![bundle](https://img.shields.io/bundlephobia/min/flash-builder-terminal?color=eab308&style=flat-square)](https://bundlephobia.com/package/flash-builder-terminal)
+[![License: MIT](https://img.shields.io/npm/l/flash-builder-terminal?color=06b6d4&style=flat-square)](LICENSE)
+[![Node](https://img.shields.io/node/v/flash-builder-terminal?color=eab308&style=flat-square)](package.json)
+[![issues](https://img.shields.io/github/issues/Abdr007/flash-builder-terminal?color=ff7a59&style=flat-square)](https://github.com/Abdr007/flash-builder-terminal/issues)
+[![commit](https://img.shields.io/github/last-commit/Abdr007/flash-builder-terminal?color=06b6d4&style=flat-square)](https://github.com/Abdr007/flash-builder-terminal/commits/main)
 
 [![Solana](https://img.shields.io/badge/built_on-Solana-9945ff?logo=solana&logoColor=white&style=flat-square)](https://solana.com)
 [![MagicBlock](https://img.shields.io/badge/router-MagicBlock_ER-ff7a59?style=flat-square)](https://magicblock.gg)
@@ -83,7 +83,7 @@ Trading perps from a browser is the wrong shape for power users — the round-tr
 - **Natural-language dispatch** — `long SOL 5 2x`, `close 50% of BTC short`, `reverse SOL long`, `set SOL long tp 100 sl 70`
 - **Atomic reverse** in a single tx (vs. close+open race)
 - **Inline TP/SL** bundled into the open ix (no second tx, no inter-trade cooldown)
-- **Programmatic SDK** — `import { createMagicSession } from 'flash-magic-terminal/sdk'`
+- **Programmatic SDK** — `import { createMagicSession } from 'flash-builder-terminal/sdk'`
 - **Agent-mode** (`NO_DNA=1`) — JSON output, structured errors, designed for orchestration
 
 It is also a **reference implementation** of every safety practice you'd want around an automated signing path: persistent kill switch, program-ID allowlist, chain-truth verification on withdrawals, sentinel-aware journals, SSRF defence on RPC URLs, signing audit log. See [`THREAT_MODEL.md`](THREAT_MODEL.md).
@@ -341,7 +341,7 @@ Disclosure policy in [`SECURITY.md`](SECURITY.md). Full asset / adversary / boun
 ## ✦ Programmatic SDK
 
 ```ts
-import { createMagicSession, TradeSide } from 'flash-magic-terminal/sdk';
+import { createMagicSession, TradeSide } from 'flash-builder-terminal/sdk';
 
 const magic = await createMagicSession({
   walletKeypairPath: '~/.config/solana/id.json',
@@ -452,7 +452,7 @@ A: `NO_DNA=1` makes everything JSON. The SDK gives you typed error classes. Ther
 A: Yes. Clone, `npm install`, `npm run dev` — the REPL runs from TypeScript via `tsx` without rebuilding.
 
 **Q: How do I report bugs?**
-A: Run `magic feedback "thing broke"` to capture an env fingerprint (no secrets, ever), then attach `~/.magic/feedback.jsonl` to a [GitHub issue](https://github.com/Abdr007/flash-magic-terminal/issues).
+A: Run `magic feedback "thing broke"` to capture an env fingerprint (no secrets, ever), then attach `~/.magic/feedback.jsonl` to a [GitHub issue](https://github.com/Abdr007/flash-builder-terminal/issues).
 
 ---
 
@@ -481,8 +481,8 @@ For security issues, please follow the disclosure policy in [`SECURITY.md`](SECU
 ### Local dev setup
 
 ```bash
-git clone https://github.com/Abdr007/flash-magic-terminal.git
-cd flash-magic-terminal
+git clone https://github.com/Abdr007/flash-builder-terminal.git
+cd flash-builder-terminal
 npm install
 npm run dev          # run the CLI directly from TypeScript (tsx)
 npm test             # run the unit + property suite
@@ -505,5 +505,5 @@ npm run smoke:local  # devnet integration smoke (needs MAGIC_TEST_KEYPAIR_BASE58
 MIT — see [`LICENSE`](LICENSE).
 
 <div align="center">
-<sub>Built with care.  ·  <a href="https://github.com/Abdr007/flash-magic-terminal/issues">Report a bug</a>  ·  <a href="https://www.npmjs.com/package/flash-magic-terminal">npm</a>  ·  <a href="https://github.com/Abdr007/flash-magic-terminal/releases">Releases</a></sub>
+<sub>Built with care.  ·  <a href="https://github.com/Abdr007/flash-builder-terminal/issues">Report a bug</a>  ·  <a href="https://www.npmjs.com/package/flash-builder-terminal">npm</a>  ·  <a href="https://github.com/Abdr007/flash-builder-terminal/releases">Releases</a></sub>
 </div>

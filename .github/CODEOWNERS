@@ -1,0 +1,9 @@
+# Default owner for everything in the repo. Required reviewer on PRs when
+# branch protection has "require review from Code Owners" enabled.
+* @Abdr007
+
+# Money path & signing safety — the highest-risk surface. Keep the owner as the
+# explicit reviewer so these are never merged without a deliberate look.
+/src/client/flash-v2-builder.ts @Abdr007
+/src/security/                  @Abdr007
+/src/wallet/                    @Abdr007
