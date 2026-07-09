@@ -30,7 +30,7 @@ import { createInterface } from 'readline';
 import { loadConfig } from './config/index.js';
 import { WalletManager } from './wallet/walletManager.js';
 import { MagicTerminal } from './cli/terminal.js';
-import { c, DIAMOND } from './cli/magic-theme.js';
+import { c, DIAMOND, BRAND_NAME_UPPER } from './cli/magic-theme.js';
 import { initLogger, getLogger, LogLevel } from './utils/logger.js';
 import { setupWallet } from './cli/wallet-flows.js';
 import { renderHero } from './cli/banner.js';
@@ -51,7 +51,7 @@ function printHelp(): void {
 
   const lines: string[] = [
     '',
-    `  ${DIAMOND}  ${c.teal.bold('FLASH BUILDER TERMINAL')}  ${c.muted(`v${VERSION}`)}`,
+    `  ${DIAMOND}  ${c.teal.bold(BRAND_NAME_UPPER)}  ${c.muted(`v${VERSION}`)}`,
     `     ${c.muted('Sub-second perpetuals on MagicBlock ER · Flash Trade V2')}`,
     rule,
 
