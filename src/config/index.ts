@@ -365,6 +365,11 @@ export function validateRpcUrl(url: string, label = 'RPC_URL'): string {
 function isPrivateOrSpecialHost(host: string): boolean {
   // Strip surrounding brackets from IPv6 literals.
   const h = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  // NOTE on non-standard IPv4 encodings (integer 2130706433, hex 0x7f000001,
+  // octal 017700000001): the WHATWG URL parser in validateRpcUrl already
+  // normalises these to dotted-decimal BEFORE we see `host`, so the private /
+  // link-local / IMDS ranges below still catch them (verified by test). We
+  // therefore don't need a bespoke inet_aton decoder here.
   // IPv4 literal?
   const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4) {

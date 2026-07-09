@@ -275,6 +275,11 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
       if (telemetry.slot === previousSlot) slotFreezeCount++;
       else slotFreezeCount = 0;
       previousSlot = telemetry.slot;
+    } else {
+      // getSlot failed this tick — reset so a later success isn't compared
+      // against a pre-outage slot, which would flash a spurious "frozen" ⚠.
+      slotFreezeCount = 0;
+      previousSlot = -1;
     }
 
     // Aggregate OI per target custody, split by side.
@@ -681,7 +686,7 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
     const fetchPromise = fetchData();
     inFlight = fetchPromise;
     // Clear `inFlight` only when the underlying fetch actually settles.
-    fetchPromise.finally(() => { if (inFlight === fetchPromise) inFlight = null; });
+    fetchPromise.finally(() => { if (inFlight === fetchPromise) inFlight = null; }).catch(() => { /* handled below */ });
     try {
       const rows = await Promise.race([
         fetchPromise,

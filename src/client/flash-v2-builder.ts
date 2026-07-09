@@ -555,7 +555,16 @@ function looksExpiredBlockhash(err: unknown): boolean {
 export function uiAmount(value: string | number): string {
   if (typeof value === 'string') return value;
   if (!Number.isFinite(value)) throw new Error(`invalid UI amount: ${value}`);
-  return Number.isInteger(value) ? value.toString() : value.toFixed(12).replace(/\.?0+$/, '');
+  // Bound the magnitude: beyond ~1e15 a float can't represent integers exactly,
+  // and `Number.toString()` switches to exponential (e.g. 1e21 → "1e+21"),
+  // which the API's JSON-number/string parser would choke on.
+  if (Math.abs(value) >= 1e15) throw new Error(`UI amount out of range: ${value}`);
+  // Fixed notation always (toFixed never yields exponential).
+  const out = Number.isInteger(value) ? value.toFixed(0) : value.toFixed(12).replace(/\.?0+$/, '');
+  // A tiny non-zero that rounds to "0" at 12 decimals would silently send a
+  // zero amount — reject rather than lose the value.
+  if (value !== 0 && (out === '0' || out === '-0')) throw new Error(`UI amount underflows to zero: ${value}`);
+  return out;
 }
 
 export class FlashV2BuilderClient {

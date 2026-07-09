@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import chalk from 'chalk';
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
-import { readFileSync } from 'fs';
+import { readFileSync, statSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { resolve } from 'path';
 import { ToolDefinition, ToolContext, ToolResult } from '../types/index.js';
@@ -283,10 +283,25 @@ function loadKeypairFile(path: string): Keypair {
   const resolved = resolve(path);
   const home = homedir();
   const homePrefix = home.endsWith('/') ? home : home + '/';
-  if (resolved !== home && !resolved.startsWith(homePrefix)) {
+  const inHome = (p: string): boolean => p === home || p.startsWith(homePrefix);
+  if (!inHome(resolved)) {
     throw new Error(`Keypair path must be within home directory (${home}). Got: ${resolved}`);
   }
-  const parsed = JSON.parse(readFileSync(resolved, 'utf8')) as unknown;
+  // Resolve symlinks and re-check — a symlink inside home could point outside.
+  let real = resolved;
+  try { real = realpathSync(resolved); } catch { /* may not exist yet; fall back to resolved */ }
+  if (!inHome(real)) {
+    throw new Error(`Keypair path escapes the home directory via symlink: ${real}`);
+  }
+  const st = statSync(real);
+  if (!st.isFile()) throw new Error(`Keypair path is not a regular file: ${real}`);
+  if (st.size > 4096) throw new Error(`Keypair file too large (${st.size} bytes) — refusing to read.`);
+  // Refuse group/world-accessible key files (POSIX only), matching the primary
+  // wallet loader's 0600 gate. A fee-payer key is still a key.
+  if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) {
+    throw new Error(`Keypair file ${real} is group/world-accessible (mode ${(st.mode & 0o777).toString(8)}). Run: chmod 600 ${real}`);
+  }
+  const parsed = JSON.parse(readFileSync(real, 'utf8')) as unknown;
   if (!Array.isArray(parsed) || parsed.length !== 64) {
     throw new Error(`Invalid keypair file ${resolved}: expected 64-byte JSON array.`);
   }
@@ -2634,7 +2649,7 @@ export const magicReverse: ToolDefinition = {
         rows: [
           { label: 'Entry',       value: entry > 0 ? c.primary(`$${entry.toFixed(4)}`) : c.muted('—') },
           { label: 'Liquidation', value: liq },
-          { label: 'Size',        value: c.primary(formatUsdExact(fieldNumber(result.response, 'youRecieveUsdUi'))) },
+          { label: 'Size',        value: c.primary(formatUsdExact(fieldNumber(result.response, 'youRecieveUsdUi') || (inheritedCollateral * (leverage ?? 0)))) },
           { label: 'Collateral',  value: `${c.primary(formatUsdExact(inheritedCollateral))} ${c.muted('(carried over)')}` },
           ...builderTxRows(result, context.config.network),
         ],
@@ -2663,6 +2678,11 @@ export const magicPartialClose: ToolDefinition = {
     // Resolve size — explicit USD wins; otherwise compute from percent of
     // the existing position's current size.
     let sizeUsd = params.sizeUsd as number | undefined;
+    // For the percent path we scale the KNOWN token size directly rather than
+    // round-tripping USD→token through the current mark price. `sizeUsdUi` may
+    // be entry-notional; a mark-price round-trip would then close the wrong
+    // quantity (e.g. 50% of a 1 BTC position closing 0.4545 BTC after a move).
+    let tokenSizeUi: string | undefined;
     if (sizeUsd === undefined) {
       const pct = params.sizePercent as number | undefined;
       if (pct === undefined) {
@@ -2675,15 +2695,17 @@ export const magicPartialClose: ToolDefinition = {
       if (!existing) {
         return { success: false, message: `No open ${side} position on ${market.toUpperCase()} to partial-close.` };
       }
-      sizeUsd = (existing.sizeUsd * pct) / 100;
-      if (sizeUsd <= 0) return { success: false, message: `Computed close size is zero (position size $${existing.sizeUsd.toFixed(2)}, ${pct}%).` };
+      const tokenSize = (existing.sizeAmountUi * pct) / 100;
+      if (!(tokenSize > 0)) return { success: false, message: `Computed close size is zero (position size $${existing.sizeUsd.toFixed(2)}, ${pct}%).` };
+      tokenSizeUi = uiAmount(tokenSize);
+      sizeUsd = (existing.sizeUsd * pct) / 100; // for the card display only
     }
 
     const r = await signV2(context, 'decreasePosition', {
       owner,
       marketSymbol: market,
       side: v2Side(side),
-      sizeAmountUi: await sizeUsdToTokenAmount(client, market, sizeUsd),
+      sizeAmountUi: tokenSizeUi ?? await sizeUsdToTokenAmount(client, market, sizeUsd),
       withdrawTokenSymbol: 'USDC',
       slippagePercentage: slippageStr(params),
     });
