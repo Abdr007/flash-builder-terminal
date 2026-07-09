@@ -6,11 +6,25 @@
  * - `safeEnvString` — returns the trimmed value or fallback.
  */
 
-export function safeEnvNumber(key: string, fallback: number): number {
+export function safeEnvNumber(
+  key: string,
+  fallback: number,
+  opts?: { min?: number; max?: number },
+): number {
   const raw = process.env[key];
   if (raw === undefined || raw === null || raw === '') return fallback;
   const n = Number(raw);
-  return Number.isFinite(n) ? n : fallback;
+  if (!Number.isFinite(n)) return fallback;
+  // Fail LOUD on out-of-range values for bounded settings. A silent clamp or
+  // fallback is how a mistyped cap (e.g. MAX_LEVERAGE=-1) quietly turned the
+  // guard OFF — the `> 0` gate reads a negative as "disabled".
+  if (opts?.min !== undefined && n < opts.min) {
+    throw new Error(`${key}=${raw} is below the minimum ${opts.min}.`);
+  }
+  if (opts?.max !== undefined && n > opts.max) {
+    throw new Error(`${key}=${raw} is above the maximum ${opts.max}.`);
+  }
+  return n;
 }
 
 export function safeEnvBool(key: string, fallback: boolean): boolean {

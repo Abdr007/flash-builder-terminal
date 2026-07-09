@@ -132,6 +132,7 @@ const ONE_SHOT_VERBS = new Set<string>([
   'doctor', 'diag', 'diagnose', 'check', 'perf', 'performance',
   // Trading (NO_DNA users must set MAGIC_AUTO_CONFIRM=true to allow these)
   'open', 'o', 'close', 'reverse', 'increase', 'partial-close', 'partial',
+  'buy', 'sell', // handled by parseSide (buy→long, sell→short) via the interpreter
   'add-collateral', 'add', 'remove-collateral', 'remove',
   'limit', 'place-limit',
   'cancel', 'cancel-limit', 'cancel-trigger',
@@ -268,8 +269,17 @@ async function main(): Promise<void> {
 
   const terminal = new MagicTerminal(config, walletManager);
 
+  // Restore the terminal to a sane state on a hard crash: show the cursor and
+  // leave the alternate screen. Without this, a crash while a spinner has the
+  // cursor hidden, or while the `monitor` TUI owns the alt-screen, drops the
+  // user into an invisible-cursor / stuck-alt-buffer shell needing `reset`.
+  const restoreTerminal = (): void => {
+    try { if (process.stdout.isTTY) process.stdout.write('\x1b[?25h\x1b[?1049l'); } catch { /* ignore */ }
+  };
+
   process.on('uncaughtException', (err) => {
     logger.error('fatal', 'uncaughtException', { error: err.message, stack: err.stack });
+    restoreTerminal();
     // EPIPE on stdout/stderr — caller closed the pipe (e.g. `magic | head`).
     // Don't render anything (writes will fail again); just exit cleanly.
     if ((err as NodeJS.ErrnoException).code === 'EPIPE') {

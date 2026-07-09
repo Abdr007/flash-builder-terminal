@@ -178,9 +178,12 @@ export const COMMAND_ALIASES: Record<string, string> = {
   px: 'price',
   ca: 'close-all',
   // Natural-language synonyms.
-  buy: 'open',
-  sell: 'close',
   flip: 'reverse',
+  // NOTE: `buy`/`sell` are deliberately NOT aliased to open/close here. On
+  // perps `sell` means "open a SHORT", not "close" — the old `sell: 'close'`
+  // silently CLOSED a position when the user meant to short. Both are handled
+  // by parseSide (buy→long, sell→short) so `buy/sell <mkt> <coll> <lev>` opens
+  // the correct side; they're registered as one-shot verbs in index.ts.
 };
 function expandCommandAlias(input: string): string {
   const sp = input.indexOf(' ');
@@ -705,7 +708,7 @@ export function interpretCommand(rawInput: string, _config?: MagicConfig): Parse
   }
   // ─── Close with optional partial suffix: "close SOL long 50%" / "$20" ───
   {
-    const m = lower.match(/^(?:close|exit|sell)\s+(?:my\s+)?([a-z]+)\s+(long|short|buy|sell)(?:\s+position)?\s*(.*)$/);
+    const m = lower.match(/^(?:close|exit)\s+(?:my\s+)?([a-z]+)\s+(long|short|buy|sell)(?:\s+position)?\s*(.*)$/);
     if (m) {
       const side = parseSide(m[2]);
       const market = resolveMarket(m[1]);
@@ -723,7 +726,7 @@ export function interpretCommand(rawInput: string, _config?: MagicConfig): Parse
   }
   // Close without side — let the tool auto-detect
   {
-    const m = lower.match(/^(?:close|exit|sell)\s+(?:my\s+)?([a-z]+)(?:\s+position)?$/);
+    const m = lower.match(/^(?:close|exit)\s+(?:my\s+)?([a-z]+)(?:\s+position)?$/);
     if (m) {
       const market = resolveMarket(m[1]);
       if (isKnownMarket(market)) return { alias: 'close', params: { market } };

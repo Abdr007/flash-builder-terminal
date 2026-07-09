@@ -1065,14 +1065,14 @@ export const magicDeposit: ToolDefinition = {
     return {
       success: true,
       message: renderCard({
-        status: 'Deposit Complete',
+        status: 'Deposit Submitted',
         tone: 'open',
         subtitle: `${c.long('⇣')}  ${c.muted('wallet → Flash Account')}`,
         columns: 1,
         rows: [
           { label: 'Token',  value: c.primary.bold(symbol) },
           { label: 'Amount', value: c.primary(`${amountHuman} ${symbol}`) },
-          { label: 'State',  value: c.muted('re-read basket snapshot / stream for final state') },
+          { label: 'State',  value: c.muted('submitted — pending on-chain confirmation; re-read basket / stream for final state') },
         ],
         url: solscanTx(result.signature, context.config.network),
       }),
@@ -1104,7 +1104,7 @@ export const magicDepositDirect: ToolDefinition = {
     return {
       success: true,
       message: renderCard({
-        status: 'Direct Deposit Complete',
+        status: 'Direct Deposit Submitted',
         tone: 'open',
         subtitle: `${c.long('⇣')}  ${c.muted('wallet → Flash Account')}`,
         columns: 1,
@@ -1453,9 +1453,9 @@ export const magicWithdraw: ToolDefinition = {
     }
 
     const card = renderCard({
-      status: 'Withdrawal Complete',
+      status: 'Withdrawal Submitted',
       tone: 'close',
-      subtitle: `${DIAMOND}  ${c.muted('Flash Account → wallet')}`,
+      subtitle: `${DIAMOND}  ${c.muted('Flash Account → wallet · pending confirmation')}`,
       columns: 1,
       rows,
     });
@@ -2555,55 +2555,53 @@ export const magicAccount: ToolDefinition = {
 
 export const magicReverse: ToolDefinition = {
   name: 'magicReverse',
-  description: 'Close current position and open opposite side. args: market, side; collateral & leverage default to existing position.',
+  description: 'Close current position and open opposite side. args: market, side; leverage defaults to the existing position. Collateral carries over automatically (the API has no collateral input for reverse).',
   parameters: z.object({
     market: z.string(),
     side: z.enum(['long', 'short']),
-    collateral: z.number().positive().optional(),
     leverage: z.number().positive().optional(),
   }),
   async execute(params, context): Promise<ToolResult> {
     const client = buildFlashV2Client(context);
     const owner = ownerKeypair(context).publicKey.toBase58();
 
-    let collateral = params.collateral as number | undefined;
     let leverage = params.leverage as number | undefined;
-    if (collateral === undefined || leverage === undefined) {
-      const target = String(params.market).toUpperCase();
-      const targetSide = v2UiSide(String(params.side));
+    const target = String(params.market).toUpperCase();
+    const targetSide = v2UiSide(String(params.side));
 
-      let positions = await v2Positions(client, owner);
-      let existing = positions.find((p) => p.market === target && p.side === targetSide);
-      // Only retry when the basket was empty — that's the ER-replication race.
-      // If positions came back populated but didn't match, retry won't help.
-      if (!existing && positions.length === 0) {
-        await new Promise((r) => setTimeout(r, 500));
-        positions = await v2Positions(client, owner);
-        existing = positions.find((p) => p.market === target && p.side === targetSide);
-      }
-      if (!existing) {
-        const summary = positions.length === 0
-          ? 'basket appears empty (ER may be lagging — try again in a moment)'
-          : `basket has ${positions.length}: ${positions.map((p) => `${p.market}/${p.side}`).join(', ')}`;
+    // Always read the existing position: reverse REQUIRES one, we need it to
+    // derive leverage when omitted, and to show the collateral that actually
+    // carries over. The reversePosition builder reuses the freed collateral —
+    // there is no collateral input to the API — so we never accept or invent one.
+    let positions = await v2Positions(client, owner);
+    let existing = positions.find((p) => p.market === target && p.side === targetSide);
+    // Only retry when the basket was empty — that's the ER-replication race.
+    if (!existing && positions.length === 0) {
+      await new Promise((r) => setTimeout(r, 500));
+      positions = await v2Positions(client, owner);
+      existing = positions.find((p) => p.market === target && p.side === targetSide);
+    }
+    if (!existing) {
+      const summary = positions.length === 0
+        ? 'basket appears empty (ER may be lagging — try again in a moment)'
+        : `basket has ${positions.length}: ${positions.map((p) => `${p.market}/${p.side}`).join(', ')}`;
+      return {
+        success: false,
+        message: `No open ${params.side} position on ${target} to reverse. ${summary}.`,
+      };
+    }
+    // Guard against div-by-zero. A position with collateralUsd=0 means the
+    // on-chain state is corrupt or already fully liquidated.
+    if (leverage === undefined) {
+      if (!Number.isFinite(existing.collateralUsd) || existing.collateralUsd <= 0) {
         return {
           success: false,
-          message: `No open ${params.side} position on ${target}. ${summary}. Or pass collateral & leverage explicitly.`,
+          message: `Cannot infer leverage for ${target} ${params.side}: existing position has zero or invalid collateral. Pass leverage explicitly.`,
         };
       }
-      collateral ??= existing.collateralUsd;
-      // Guard against div-by-zero. A position with collateralUsd=0 means the
-      // on-chain state is corrupt or the position has already been fully
-      // liquidated. Either way we can't derive leverage from it.
-      if (leverage === undefined) {
-        if (!Number.isFinite(existing.collateralUsd) || existing.collateralUsd <= 0) {
-          return {
-            success: false,
-            message: `Cannot infer leverage for ${target} ${params.side}: existing position has zero or invalid collateral. Pass leverage explicitly.`,
-          };
-        }
-        leverage = existing.sizeUsd / existing.collateralUsd;
-      }
+      leverage = existing.sizeUsd / existing.collateralUsd;
     }
+    const inheritedCollateral = existing.collateralUsd;
 
     const result = await signV2(context, 'reversePosition', {
       owner,
@@ -2637,7 +2635,7 @@ export const magicReverse: ToolDefinition = {
           { label: 'Entry',       value: entry > 0 ? c.primary(`$${entry.toFixed(4)}`) : c.muted('—') },
           { label: 'Liquidation', value: liq },
           { label: 'Size',        value: c.primary(formatUsdExact(fieldNumber(result.response, 'youRecieveUsdUi'))) },
-          { label: 'Collateral',  value: c.primary(formatUsdExact(collateral)) },
+          { label: 'Collateral',  value: `${c.primary(formatUsdExact(inheritedCollateral))} ${c.muted('(carried over)')}` },
           ...builderTxRows(result, context.config.network),
         ],
         url: solscanTx(result.signature, context.config.network),

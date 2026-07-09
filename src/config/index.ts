@@ -464,15 +464,17 @@ export function loadConfig(): MagicConfig {
     // explicitly via env var or .env.
     autoConfirm: safeEnvBoolStrict('MAGIC_AUTO_CONFIRM', file.auto_confirm ?? false),
     fastConfirm: safeEnvBool('MAGIC_FAST_CONFIRM', file.fast_confirm ?? true),
-    maxCollateralPerTrade: safeEnvNumber('MAX_COLLATERAL_PER_TRADE', file.max_collateral_per_trade ?? 0),
-    maxPositionSize: safeEnvNumber('MAX_POSITION_SIZE', file.max_position_size ?? 0),
-    maxLeverage: safeEnvNumber('MAX_LEVERAGE', file.max_leverage ?? 0),
-    maxTradesPerMinute: safeEnvNumber('MAX_TRADES_PER_MINUTE', file.max_trades_per_minute ?? 10),
+    // Caps: 0 = unlimited (valid). A NEGATIVE value is a mistake that would
+    // otherwise silently disable the guard (its `> 0` gate) — reject it loudly.
+    maxCollateralPerTrade: safeEnvNumber('MAX_COLLATERAL_PER_TRADE', file.max_collateral_per_trade ?? 0, { min: 0 }),
+    maxPositionSize: safeEnvNumber('MAX_POSITION_SIZE', file.max_position_size ?? 0, { min: 0 }),
+    maxLeverage: safeEnvNumber('MAX_LEVERAGE', file.max_leverage ?? 0, { min: 0 }),
+    maxTradesPerMinute: safeEnvNumber('MAX_TRADES_PER_MINUTE', file.max_trades_per_minute ?? 10, { min: 0 }),
     // Default 0 — manual REPL users hit this constantly when they run
     // open→reverse or open→close back-to-back. The MAX_TRADES_PER_MINUTE
     // cap (default 10/min) is the real anti-runaway protection;
     // requiring 1s between every trade adds friction without adding
     // safety. Agents that want a cooldown can set this explicitly.
-    minDelayBetweenTradesMs: safeEnvNumber('MIN_DELAY_BETWEEN_TRADES_MS', file.min_delay_between_trades_ms ?? 0),
+    minDelayBetweenTradesMs: safeEnvNumber('MIN_DELAY_BETWEEN_TRADES_MS', file.min_delay_between_trades_ms ?? 0, { min: 0 }),
   };
 }

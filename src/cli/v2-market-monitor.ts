@@ -625,28 +625,46 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
     return lines;
   };
 
+  // Full cleanup for any setup-phase failure AFTER raw mode / alt-screen were
+  // entered. These are normal promise rejections (not uncaughtException), so
+  // the emergency handler wouldn't fire — without this the terminal leaks in
+  // raw + alt-screen mode. Restores everything and unwires the crash listener.
+  const cleanupAndBail = (err: unknown, what: string): void => {
+    emergencyRestore(); // leaveAltScreen + reset + setRawMode(wasRaw)
+    process.removeListener('uncaughtException', onUncaught);
+    deps.rl.resume();
+    getLogger().warn('v2-monitor', `${what}: ${getErrorMessage(err)}`);
+    try { process.stdout.write(chalk.red(`  Market monitor: ${getErrorMessage(err)}\n`)); } catch { /* stdout closed */ }
+  };
+
   // ─── STEP 2: enter alt-screen + loading frame ─────────────────
-  renderer.enterAltScreen();
-  altScreenEntered = true;
-  renderer.clear();
-  renderer.render(['', `  ${c.teal.bold(`${BRAND_NAME_UPPER} — MARKET MONITOR`)}`, '', c.faint('  Loading market data via Pyth…'), '']);
+  try {
+    renderer.enterAltScreen();
+    altScreenEntered = true;
+    renderer.clear();
+    renderer.render(['', `  ${c.teal.bold(`${BRAND_NAME_UPPER} — MARKET MONITOR`)}`, '', c.faint('  Loading market data via Pyth…'), '']);
+  } catch (err) {
+    cleanupAndBail(err, 'alt-screen enter failed');
+    return;
+  }
 
   // ─── STEP 3: first dataset (block) ────────────────────────────
   let initialRows: MarketRow[];
   try {
     initialRows = await fetchData();
   } catch (err) {
-    renderer.leaveAltScreen();
-    getLogger().warn('v2-monitor', `initial fetch failed: ${getErrorMessage(err)}`);
-    process.stdout.write(chalk.red(`  Failed to fetch market data: ${getErrorMessage(err)}\n`));
-    if (process.stdin.isTTY) process.stdin.setRawMode(wasRaw ?? false);
-    deps.rl.resume();
+    cleanupAndBail(err, 'initial fetch failed');
     return;
   }
 
-  const renderStart0 = performance.now();
-  renderer.render(buildFrame(initialRows));
-  telemetry.renderTimeMs = Math.round(performance.now() - renderStart0);
+  try {
+    const renderStart0 = performance.now();
+    renderer.render(buildFrame(initialRows));
+    telemetry.renderTimeMs = Math.round(performance.now() - renderStart0);
+  } catch (err) {
+    cleanupAndBail(err, 'initial render failed');
+    return;
+  }
 
   // ─── STEP 4: refresh loop ─────────────────────────────────────
   // Coalesce concurrent ticks: `inFlight` is the actual pending fetchData

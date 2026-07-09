@@ -1411,14 +1411,13 @@ export class MagicTerminal {
       const s = Math.floor((remaining % 60_000) / 1000);
       const mm = m.toString();
       const ss = s.toString().padStart(2, '0');
-      return `  ${c.cyan.bold('↵')} ${c.muted('sign')}  ${c.faint('·')}  ${c.muted('n')} ${c.muted('cancel')}  ${c.faint('·')}  ${c.faint(`⏲ ${mm}:${ss}`)} `;
+      return `  ${c.long.bold('y')} ${c.muted('sign')}  ${c.faint('·')}  ${c.cyan.bold('↵')} ${c.muted('cancel')}  ${c.faint('·')}  ${c.faint(`⏲ ${mm}:${ss}`)} `;
     };
 
-    // Discard any pre-typed input so the user can't auto-confirm before
-    // seeing the card — prevents the "I typed y while it was loading
-    // and signed the wrong thing" footgun.
-    // (rl interface buffers via input stream; nothing to clear synchronously,
-    // so we set up the question fresh below.)
+    // We do NOT rely on flushing pre-typed input (readline buffers via the
+    // input stream; there's nothing to clear synchronously). Instead, signing
+    // requires an explicit `y` and empty/Enter cancels — so a stray Enter that
+    // lands right after the card renders cancels rather than signs.
 
     const confirmed = await new Promise<boolean>((resolve) => {
       let settled = false;
@@ -1448,9 +1447,9 @@ export class MagicTerminal {
         clearInterval(tickHandle);
         clearTimeout(timeout);
         const trimmed = (a ?? '').trim();
-        // Enter (empty) = yes. Anything starting with `y` = yes. Anything
-        // else = no. Capital N or "no" or "n" → no, cancel cleanly.
-        if (trimmed === '') { resolve(true); return; }
+        // Signing a real trade requires an EXPLICIT `y`/`yes`. Empty input
+        // (a reflexive/stray Enter after the card renders) CANCELS — never
+        // signs. This is the safe default for an irreversible money action.
         resolve(/^y(es)?$/i.test(trimmed));
       });
     });
