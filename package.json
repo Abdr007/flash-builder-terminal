@@ -101,7 +101,7 @@
     "dotenv": "^16.4.7",
     "figlet": "^1.11.0",
     "gradient-string": "^3.0.0",
-    "ora": "^9.4.0",
+    "ora": "^9.4.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
