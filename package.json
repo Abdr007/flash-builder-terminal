@@ -108,7 +108,7 @@
     "@eslint/js": "^9.39.4",
     "@types/bn.js": "^5.2.0",
     "@types/figlet": "^1.7.0",
-    "@types/node": "^22.13.0",
+    "@types/node": "^22.20.1",
     "@typescript-eslint/eslint-plugin": "^8.43.0",
     "@typescript-eslint/parser": "^8.43.0",
     "eslint": "^9.0.0",
