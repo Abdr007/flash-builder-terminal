@@ -81,7 +81,3 @@ export function getEngine(): ToolEngine {
   if (!_engine) _engine = new ToolEngine();
   return _engine;
 }
-
-export function resetEngine(): void {
-  _engine = null;
-}

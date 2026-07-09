@@ -225,12 +225,6 @@ export function mapSdkError(err: unknown, context?: string): string {
   return `${ctx}${err instanceof Error ? err.message : String(err)}`;
 }
 
-/** True if the error is recoverable by re-running setup / deposit. */
-export function isAccountNotInitialized(err: unknown): boolean {
-  const p = extractCustom(err);
-  return p?.name === 'AccountNotInitialized';
-}
-
 /**
  * Wrap an unknown SDK / on-chain error in a `TradingError` so call sites can
  * `throw toTradingError(err, 'context')` without losing the original error

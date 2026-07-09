@@ -146,17 +146,6 @@ export function matchFingerprints(basket: BasketShape | null, fingerprints: Trig
   return out;
 }
 
-/**
- * Thrown when an SDK-side op isn't yet exposed via the FlashEdge wrapper.
- * Currently only triggers for orderbook ops that aren't required for v1.
- */
-export class NotImplementedInMagicMode extends Error {
-  constructor(opName: string) {
-    super(`[magic-mode] ${opName} not yet wired in FlashEdge wrapper.`);
-    this.name = 'NotImplementedInMagicMode';
-  }
-}
-
 export interface MagicTradeClientOptions {
   /** Owner wallet — pays L1 fees, signs init/delegate/deposit/createSession. */
   wallet: Keypair;
@@ -178,14 +167,6 @@ export interface MagicTradeClientOptions {
    * synchronously for ER commit (slower but caller knows trade landed).
    */
   fastConfirm?: boolean;
-}
-
-/**
- * Snapshot of the active session, returned to callers so they can persist it.
- */
-export interface ActiveSessionInfo {
-  sessionPubkey: string;
-  expiresAt: number; // unix seconds
 }
 
 export class MagicTradeClient {

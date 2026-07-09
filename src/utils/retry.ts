@@ -35,18 +35,6 @@ function consumeRetryBudget(): boolean {
   return true;
 }
 
-export function getRetryBudgetUsage(): { used: number; max: number; exhausted: boolean } {
-  const now = Date.now();
-  while (retryTimestamps.length > 0 && retryTimestamps[0] < now - BUDGET_WINDOW_MS) {
-    retryTimestamps.shift();
-  }
-  return {
-    used: retryTimestamps.length,
-    max: MAX_RETRIES_PER_WINDOW,
-    exhausted: retryTimestamps.length >= MAX_RETRIES_PER_WINDOW,
-  };
-}
-
 function extractRateLimitDelay(error: Error): number {
   const msg = error.message ?? '';
   if (!msg.includes('429') && !msg.toLowerCase().includes('rate limit') && !msg.toLowerCase().includes('too many requests')) {

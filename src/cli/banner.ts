@@ -167,11 +167,6 @@ export function renderSession(info: BannerInfo): string {
   return lines.join('\n');
 }
 
-/** Backward-compat composition. New callers should use `renderHero` + `renderSession`. */
-export async function renderBanner(info: BannerInfo): Promise<string> {
-  return (await renderHero()) + renderSession(info);
-}
-
 function stripScheme(url: string): string {
   return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
