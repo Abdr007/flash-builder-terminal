@@ -48,6 +48,23 @@ interface WizardOptions {
   quick?: boolean;
   /** Override network (`mainnet-beta` default). */
   network?: 'mainnet-beta' | 'devnet';
+  /**
+   * Reuse an already-open readline interface instead of creating a new one.
+   *
+   * CRITICAL: when `init` runs from inside the REPL the terminal already owns
+   * a `terminal:true` readline on `process.stdin`. Opening a SECOND interface
+   * here makes BOTH echo every keystroke — the user sees `hhttttppss::…`. The
+   * fix is to prompt on the caller's existing interface. When omitted (the
+   * pre-REPL auto-wizard / one-shot `magic init`) we own the interface and
+   * create + close it ourselves.
+   */
+  rl?: Interface;
+  /**
+   * Mask the RPC keystrokes as the user types (the URL usually embeds a
+   * paid-provider API key). Off by default so the pre-REPL path still echoes
+   * normally; the REPL onboarding turns it on.
+   */
+  maskRpc?: boolean;
 }
 
 /** Auto-detect a Solana CLI keypair. Returns the path iff readable + valid. */
@@ -92,6 +109,45 @@ async function probeRpc(url: string, timeoutMs = 5000): Promise<{ slot: number; 
 async function promptOne(rl: Interface, line: string, defaultValue: string): Promise<string> {
   return new Promise((res) => {
     rl.question(line, (answer) => res(answer.trim() || defaultValue));
+  });
+}
+
+/**
+ * Like `promptOne`, but the user's keystrokes are hidden (password-style) —
+ * the RPC URL usually carries a paid-provider API key that shouldn't be echoed
+ * to a scrollback buffer or a shared screen.
+ *
+ * Implemented with the documented readline trick: swap `_writeToOutput` so the
+ * query itself prints, then every subsequent keystroke is swallowed (newlines
+ * still pass through so Enter advances the line). Restored on completion so the
+ * caller's interface — which may be the live REPL's — echoes normally again.
+ */
+async function promptMasked(rl: Interface, line: string, defaultValue: string): Promise<string> {
+  return new Promise((res) => {
+    const rlAny = rl as unknown as {
+      _writeToOutput: (s: string) => void;
+      output: NodeJS.WritableStream;
+      _muted?: boolean;
+    };
+    const original = rlAny._writeToOutput.bind(rlAny);
+    const out = rlAny.output ?? process.stdout;
+    rlAny._muted = false;
+    rlAny._writeToOutput = (s: string): void => {
+      if (rlAny._muted) {
+        // Preserve line breaks so Enter still moves the cursor down; hide
+        // everything else (the pasted / typed URL, backspace redraws, …).
+        if (s.includes('\n')) out.write('\n');
+        return;
+      }
+      original(s);
+    };
+    rl.question(line, (answer) => {
+      rlAny._muted = false;
+      rlAny._writeToOutput = original;
+      res(answer.trim() || defaultValue);
+    });
+    // The query printed while unmuted; from here on, mask input.
+    rlAny._muted = true;
   });
 }
 
@@ -158,7 +214,9 @@ function renderEnv(a: WizardAnswers): string {
  * Run the wizard. Returns the env path written, or `cancelled: true` if
  * the user bailed. Quick mode skips all prompts.
  */
-export async function runInitWizard(opts: WizardOptions = {}): Promise<{ envPath: string; cancelled: boolean }> {
+export async function runInitWizard(
+  opts: WizardOptions = {},
+): Promise<{ envPath: string; cancelled: boolean; l1RpcUrl: string }> {
   const network = opts.network ?? 'mainnet-beta';
   const publicRpc = network === 'devnet'
     ? 'https://api.devnet.solana.com'
@@ -196,17 +254,28 @@ export async function runInitWizard(opts: WizardOptions = {}): Promise<{ envPath
     l1RpcUrl = publicRpc;
     process.stdout.write(`  ${c.long('✔')}  ${c.muted('RPC:')} ${c.faint(publicRpc)} ${c.muted('(public — quick mode)')}\n`);
   } else {
-    process.stdout.write('\n');
-    process.stdout.write(`  ${c.faint('RPC URL — paste Helius / QuickNode / Triton, or')} ${c.cyan('[enter]')} ${c.faint('for public')}\n`);
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.on('SIGINT', () => {
+    // Reuse the caller's readline when given one (the REPL already owns
+    // stdin — opening a second interface double-echoes every keystroke).
+    // Only own + close the interface when nobody handed us one.
+    const rl = opts.rl ?? createInterface({ input: process.stdin, output: process.stdout });
+    const ownRl = !opts.rl;
+    const onSigint = (): void => {
       process.stdout.write('\n  ' + c.muted('cancelled — no changes written') + '\n');
       rl.close();
       process.exit(130);
-    });
+    };
+    if (ownRl) rl.on('SIGINT', onSigint);
+
+    process.stdout.write('\n');
+    const hint = opts.maskRpc
+      ? `  ${c.faint('RPC URL — paste Helius / QuickNode / Triton (hidden), or')} ${c.cyan('[enter]')} ${c.faint('for public')}\n`
+      : `  ${c.faint('RPC URL — paste Helius / QuickNode / Triton, or')} ${c.cyan('[enter]')} ${c.faint('for public')}\n`;
+    process.stdout.write(hint);
+
     let ok = false;
     while (!ok) {
-      const raw = await promptOne(rl, `  ${c.muted('>')} `, publicRpc);
+      const ask = opts.maskRpc ? promptMasked : promptOne;
+      const raw = await ask(rl, `  ${c.muted('>')} `, publicRpc);
       try {
         l1RpcUrl = validateRpcUrl(raw, 'L1 RPC');
         ok = true;
@@ -216,7 +285,10 @@ export async function runInitWizard(opts: WizardOptions = {}): Promise<{ envPath
         process.stdout.write(c.faint(`  try again, or [enter] for the public one\n`));
       }
     }
-    rl.close();
+    if (ownRl) {
+      rl.removeListener('SIGINT', onSigint);
+      rl.close();
+    }
     l1RpcUrl ??= publicRpc;
   }
 
@@ -241,13 +313,19 @@ export async function runInitWizard(opts: WizardOptions = {}): Promise<{ envPath
   writeFileSync(envPath, renderEnv(answers), { mode: 0o600 });
   process.stdout.write(`  ${c.long('✔')}  ${c.muted('Wrote')} ${c.cyan(envPath)}\n`);
 
-  // ── ONE next command. That's it. ───────────────────────────────────
-  process.stdout.write('\n');
-  process.stdout.write(`  ${c.teal.bold('Ready.')}  ${c.muted('Run')} ${c.teal.bold('magic')} ${c.muted('to start.')}\n`);
-  process.stdout.write('\n');
+  // ── Next step. ─────────────────────────────────────────────────────
+  // When we own the interface (pre-REPL / one-shot) the next move is to
+  // launch the terminal. When the REPL handed us its interface it drives the
+  // guided continuation (live RPC swap → setup → deposit) itself, so we stay
+  // quiet here rather than telling the user to "run magic" from inside magic.
+  if (!opts.rl) {
+    process.stdout.write('\n');
+    process.stdout.write(`  ${c.teal.bold('Ready.')}  ${c.muted('Run')} ${c.teal.bold('magic')} ${c.muted('to start.')}\n`);
+    process.stdout.write('\n');
+  }
 
   // Reference unused chalk import (kept available for future use).
   void chalk;
 
-  return { envPath, cancelled: false };
+  return { envPath, cancelled: false, l1RpcUrl: l1RpcUrl! };
 }
