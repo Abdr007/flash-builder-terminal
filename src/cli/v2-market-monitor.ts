@@ -14,13 +14,14 @@
 
 import type { Interface } from 'readline';
 import chalk from 'chalk';
-import { Connection, PublicKey } from '@solana/web3.js';
+import { Connection } from '@solana/web3.js';
 import { formatUsd, formatPrice, formatPercent } from '../utils/format.js';
 import { c, pad, BRAND_NAME_SHORT, BRAND_NAME_UPPER } from './magic-theme.js';
 import { TermRenderer } from './term-renderer.js';
 import { MagicTradeClient } from '../client/magic-client.js';
 import { getPythService } from '../data/pyth-prices.js';
 import { getFlashPriceService } from '../data/flash-prices.js';
+import { getFlashMarketService } from '../data/flash-markets.js';
 import { getFstatsVolumeService } from '../data/fstats-volume.js';
 import { getVolumeIndexer } from '../data/volume-indexer.js';
 import { getLogger } from '../utils/logger.js';
@@ -37,7 +38,6 @@ interface MonitorDeps {
 // don't burn rate-limit headroom on them. Refresh-in-progress guard below
 // prevents overlap if any tick spills past 1 s on a slow link.
 const REFRESH_MS = 1_000;
-const USD_POWER = 1_000_000;
 // A Flash /prices reading older than this (the endpoint went down after a
 // success) is NOT treated as a live quote — the row carries the last value
 // forward under the "stale" styling instead of showing a frozen price as live.
@@ -96,24 +96,23 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
   // Authoritative complete-coverage fallback: Flash's own /prices carries a
   // live price for EVERY market, including tokens Pyth Hermes has no feed for.
   const flashPrices = getFlashPriceService();
+  // LIVE FLASH6-pool markets + open interest. The legacy SDK `poolConfig` loads
+  // the stale FTv2 pool (26 markets, tiny OI); the Builder API is the pool you
+  // actually trade on (62 markets, real OI). Prime both maps before frame 1.
+  const flashMarkets = getFlashMarketService();
+  await flashMarkets.ensureStatic();
+  await flashMarkets.refreshOi();
 
-  // Symbol → custody (target) and pythTicker, derived once.
-  // Only include custodies that are actually TARGETED by some market — this
-  // drops stablecoin custodies like USDC which are collateral-only and have
-  // no perp market (otherwise they'd render as "$0.00 50/50" garbage).
-  type Spec = { symbol: string; pythTicker: string; targetCustody: PublicKey };
-  const targetCustodySet = new Set<string>(
-    client.poolConfig.markets.map((m) => m.targetCustody.toBase58()),
-  );
-  let specs: Spec[] = [];
+  // Universe = tradeable FLASH6 symbols. pythTicker is carried from the SDK
+  // custodies only for the optional 24h-change leg (Pyth benchmarks); price,
+  // session and OI all come from the Builder API.
+  type Spec = { symbol: string; pythTicker: string };
+  const pythTickerBySym = new Map<string, string>();
   for (const cu of client.poolConfig.custodies) {
-    // Only custodies actually TARGETED by a market — drops collateral-only
-    // custodies (USDC, etc.) that have no perp market. A missing pythTicker no
-    // longer excludes a market: Flash /prices covers it by symbol, so every
-    // tradable market appears in the monitor even when Pyth has no feed for it.
-    if (!targetCustodySet.has(cu.custodyAccount.toBase58())) continue;
-    specs.push({ symbol: cu.symbol, pythTicker: cu.pythTicker ?? '', targetCustody: cu.custodyAccount });
+    if (cu.pythTicker) pythTickerBySym.set(cu.symbol.toUpperCase(), cu.pythTicker);
   }
+  let specs: Spec[] = flashMarkets.tradeableSymbols()
+    .map((sym) => ({ symbol: sym, pythTicker: pythTickerBySym.get(sym) ?? '' }));
   if (filter) specs = specs.filter((s) => s.symbol === filter.toUpperCase());
 
   const renderer = new TermRenderer();
@@ -187,46 +186,9 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
   const fetchData = async (): Promise<MarketRow[]> => {
     const now = Date.now();
     const tickers = specs.map((s) => s.pythTicker);
-    // Real OI lives on each MARKET account's `collectivePosition.sizeUsd` —
-    // one market per (target, lock, side). The LIVE state is on ER (basket is
-    // delegated there); reading from `accounts` (L1) gives stale committed
-    // snapshots that are usually zero or way behind. We reach for `erAccounts`
-    // and fall back to L1 only if ER hasn't been initialised.
-    // FAST PATH: batched `getMultipleAccountsInfo` over the known market PDAs.
-    // The SDK's `fetchAllMarkets` does N sequential RPCs (one per market) and
-    // takes ~3s against the live ER router. We replace it with a single
-    // batched RPC and an in-process Anchor decode — typically <300ms.
-    const sdkRoot = (client as unknown as {
-      sdk: { program: { coder: { accounts: { decode: (n: string, b: Buffer) => unknown } } } };
-    }).sdk;
-    const decode = (buf: Buffer): { targetCustody: PublicKey; side: string | Record<string, unknown>; collectivePosition?: { sizeUsd?: { toString(): string } } } | null => {
-      try {
-        return sdkRoot.program.coder.accounts.decode('market', buf) as {
-          targetCustody: PublicKey;
-          side: string | Record<string, unknown>;
-          collectivePosition?: { sizeUsd?: { toString(): string } };
-        };
-      } catch {
-        return null;
-      }
-    };
-    const marketPdas = client.poolConfig.markets.map((m) => m.marketAccount);
-    const marketFetcher = async (): Promise<Array<{
-      targetCustody: PublicKey;
-      side: string | Record<string, unknown>;
-      collectivePosition?: { sizeUsd?: { toString(): string } };
-    }>> => {
-      // ER `getMultipleAccountsInfo` accepts up to 100 keys — we have ~27, so
-      // a single call covers them. Filter out nulls / decode failures.
-      const infos = await erConn.getMultipleAccountsInfo(marketPdas, 'confirmed');
-      const out: Array<{ targetCustody: PublicKey; side: string | Record<string, unknown>; collectivePosition?: { sizeUsd?: { toString(): string } } }> = [];
-      for (const info of infos) {
-        if (!info?.data) continue;
-        const decoded = decode(info.data);
-        if (decoded) out.push(decoded);
-      }
-      return out;
-    };
+    // Open interest comes from the LIVE FLASH6 pool via the Builder API
+    // (flash-markets service), aggregated per target custody and split
+    // long/short. The legacy path decoded the SDK's stale FTv2 market PDAs.
 
     // Measure each call's latency independently — sharing a Promise.all
     // timer would just give us max(slowest), which made RPC and Oracle look
@@ -247,10 +209,11 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
 
     const [oracleRes, marketsRes, rpcRes, flashRes] = await Promise.all([
       timed(pyth.getPrices(tickers).catch(() => new Map() as Map<string, ReturnType<typeof pyth.getPrices> extends Promise<Map<string, infer U>> ? U : never>)),
-      timed(marketFetcher().catch(() => [] as Array<unknown>)),
+      // OI from the live FLASH6 pool (own 6s cache; never throws).
+      timed(flashMarkets.refreshOi().catch(() => undefined)),
       timed(erConn.getSlot('confirmed').catch(() => -1)),
-      // Complete-coverage fallback price source. Own cache (1.5s TTL) so this
-      // is a no-op network-wise most ticks; never throws.
+      // Complete-coverage price source. Own cache (1.5s TTL) so this is a
+      // no-op network-wise most ticks; never throws.
       flashPrices.getPrices().catch(() => new Map()),
     ]);
     const pricesByTicker = oracleRes.value;
@@ -259,11 +222,6 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
     // outage the service keeps serving its last map; without this a frozen
     // price would render as a live green quote.
     const flashFresh = flashPrices.ageMs() <= FLASH_MAX_LIVE_AGE_MS;
-    const markets = marketsRes.value as Array<{
-      targetCustody: PublicKey;
-      side: string | Record<string, unknown>;
-      collectivePosition?: { sizeUsd?: { toString(): string } };
-    }>;
     const slot = rpcRes.value;
 
     telemetry.oracleLatencyMs = oracleRes.ms;
@@ -282,20 +240,7 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
       previousSlot = -1;
     }
 
-    // Aggregate OI per target custody, split by side.
-    const oiByCustody = new Map<string, { long: number; short: number }>();
-    for (const m of markets) {
-      const sizeRaw = m.collectivePosition?.sizeUsd ? Number(m.collectivePosition.sizeUsd.toString()) : 0;
-      if (!Number.isFinite(sizeRaw) || sizeRaw <= 0) continue;
-      const sideStr = (typeof m.side === 'string' ? m.side : Object.keys(m.side as object)[0] ?? '').toLowerCase();
-      const key = m.targetCustody.toBase58();
-      const cur = oiByCustody.get(key) ?? { long: 0, short: 0 };
-      const sizeUsd = sizeRaw / USD_POWER;
-      if (sideStr === 'short') cur.short += sizeUsd;
-      else cur.long += sizeUsd;
-      oiByCustody.set(key, cur);
-    }
-
+    void marketsRes; // timed only for telemetry (refreshOi populated the service)
     const rows: MarketRow[] = [];
     for (const s of specs) {
       const tp = pricesByTicker.get(s.pythTicker);
@@ -317,7 +262,7 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
       const change = pythLive ? tp!.priceChange24h : remembered?.change ?? NaN;
       const stale = !live;
       if (live) lastGood.set(s.symbol, { price, change });
-      const oi = oiByCustody.get(s.targetCustody.toBase58()) ?? { long: 0, short: 0 };
+      const oi = flashMarkets.oi(s.symbol) ?? { long: 0, short: 0 };
       const totalOi = oi.long + oi.short;
       const longPct = totalOi > 0 ? Math.round((oi.long / totalOi) * 100) : 50;
       const shortPct = totalOi > 0 ? 100 - longPct : 50;
