@@ -130,7 +130,7 @@ export async function showSavedWalletsMenu(
           const walletPath = store.getWalletPath(targetWallet);
           const info = tryConnectWallet(deps.walletManager, walletPath);
           if (info && deps.walletManager.isConnected) {
-            console.log(`\n  ${c.long('✔')} ${c.primary('Connected')}  ${c.muted(`as ${targetWallet}`)}`);
+            console.log(`\n  ${c.long('✔')} ${c.primary('Connected')} ${c.muted(`as ${targetWallet}`)}`);
             updateLastWallet(targetWallet);
             return { ...info, name: targetWallet };
           }
@@ -209,7 +209,7 @@ export async function showWalletPicker(
         if (info) {
           store.setDefault(wallets[idx]);
           updateLastWallet(wallets[idx]);
-          console.log(`\n  ${c.long('✔')} ${c.primary('Connected')}  ${c.muted(`as ${wallets[idx]}`)}`);
+          console.log(`\n  ${c.long('✔')} ${c.primary('Connected')} ${c.muted(`as ${wallets[idx]}`)}`);
           return { ...info, name: wallets[idx] };
         }
       } catch (error: unknown) {

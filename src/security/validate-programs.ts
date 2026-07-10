@@ -19,7 +19,13 @@ const SYSVAR_INSTRUCTIONS = 'Sysvar1nstructions1111111111111111111111111';
 const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const ED25519_PROGRAM = 'Ed25519SigVerify111111111111111111111111111';
 
-// Flash Magic Trade — same on-chain program as L1 Flash Trade on mainnet.
+// Flash Trade perpetuals programs.
+// FLASH6… is the CURRENT mainnet V2 program the Builder API (flashapi.trade)
+// builds every trade/deposit/withdraw against — verified by decoding live
+// mainnet transactions. FTv2… is the legacy mainnet program; FMTgsED… is
+// devnet. All three are allowlisted so the signing guard accepts real Flash
+// transactions across networks and the migration.
+const FLASH_V2_MAINNET_PROGRAM = 'FLASH6Lo6h3iasJKWDs2F8TkW2UKf3s15C8PMGuVfgBn';
 const FMT_MAINNET_PROGRAM = 'FTv2RxXarPfNta45HTTMVaGvjzsGg27FXJ3hEKWBhrzV';
 const FMT_DEVNET_PROGRAM = 'FMTgsEDaPPfJi1PKD67McLTC5n833T4irbBP53LLxtvj';
 
@@ -43,6 +49,7 @@ const BASE_ALLOWED = Object.freeze(
     MEMO_PROGRAM,
     ED25519_PROGRAM,
     EVENT_AUTHORITY,
+    FLASH_V2_MAINNET_PROGRAM,
     FMT_MAINNET_PROGRAM,
     FMT_DEVNET_PROGRAM,
     MAGICBLOCK_DELEGATION_PROGRAM,

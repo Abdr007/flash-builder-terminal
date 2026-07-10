@@ -2532,31 +2532,19 @@ export const magicAccount: ToolDefinition = {
 
     void totalFlashUsd; void totalWalletUsd; // retained for potential future use
 
-    // Each table line becomes its own card row with empty label so the accent
-    // bar precedes free-form text without the 14-char label gutter.
-    const rows: { label: string; value: string }[] = tableLines.map((line) => ({
-      label: '',
-      value: line,
-    }));
-    rows.push({ label: '', value: '' });
-    rows.push({
-      label: '',
-      value: `${c.long('⇣')}  ${c.long('deposit')}  ${c.muted('<token> <amount>')}     ${c.faint('wallet → Flash Account')}`,
-    });
-    rows.push({
-      label: '',
-      value: `${c.short('⇡')}  ${c.short('withdraw')} ${c.muted('<token> <amount>')}     ${c.faint('Flash Account → wallet')}`,
-    });
+    // Accent-bar panel — table lines sit directly after the bar (no 14-char
+    // label gutter that renderCard forces on empty-label rows), matching the
+    // dashboard / history panels.
+    const lines = panelHeader('Account', `${DIAMOND}  ${c.muted(`V2 mode · ${client.poolConfig.poolName}`)}`);
+    for (const t of tableLines) lines.push(panelRow(t));
+    lines.push(`  ${panelBar()}`);
+    lines.push(panelRow(`${c.long('⇣')}  ${c.long('deposit')}  ${c.muted('<token> <amount>')}     ${c.faint('wallet → Flash Account')}`));
+    lines.push(panelRow(`${c.short('⇡')}  ${c.short('withdraw')} ${c.muted('<token> <amount>')}     ${c.faint('Flash Account → wallet')}`));
+    lines.push('');
 
     return {
       success: true,
-      message: renderCard({
-        status: 'Account',
-        tone: 'info',
-        subtitle: `${DIAMOND}  ${c.muted(`V2 mode · ${client.poolConfig.poolName}`)}`,
-        columns: 1,
-        rows,
-      }),
+      message: lines.join('\n'),
       data: {
         flashAccount: Object.fromEntries(basket),
         wallet: Object.fromEntries(walletBySymbol),

@@ -211,6 +211,13 @@ export function renderCard(opts: CardOpts): string {
     }
   } else {
     for (const r of opts.rows) {
+      // Empty label → no 14-char gutter. Free-form content (tables, JSON,
+      // status lines) sits directly after the accent bar instead of being
+      // pushed right by a phantom label column.
+      if (r.label === '') {
+        lines.push(`  ${accentBar}  ${r.value}`);
+        continue;
+      }
       const labelStr = c.muted(pad(r.label, LABEL_W));
       lines.push(`  ${accentBar}  ${labelStr}${r.value}`);
     }
