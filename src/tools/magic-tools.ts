@@ -35,6 +35,7 @@ import { readMagicHistory, recordMagicTrade } from '../security/magic-history.js
 import { startErHealthMonitor, getErHealthMonitor } from '../monitor/magic-er-health.js';
 import { startMagicAlerts, stopMagicAlerts, getMagicAlerts } from '../monitor/magic-alerts.js';
 import { renderCard, marketHeader, c, DIAMOND, DOT, pad, divider, vlen } from '../cli/magic-theme.js';
+import { getFlashMarketService } from '../data/flash-markets.js';
 // Single source of truth for the oracle-price decoder. Property-tested.
 
 /** USDC mints — mainnet vs devnet test stable. */
@@ -2384,22 +2385,17 @@ export const magicAccount: ToolDefinition = {
   name: 'magicAccount',
   description: 'Show Flash Account (basket) and wallet balances side-by-side per token.',
   async execute(_params, context): Promise<ToolResult> {
-    const client = buildMagicClient(context);
     const v2Client = buildFlashV2Client(context);
     const owner = ownerKeypair(context).publicKey.toBase58();
 
-    // Determine which tokens we actually need to render before we fan out
-    // oracle reads — keeps cold cost to one fetch per non-stable lock symbol
-    // even on a fresh process. Lock custodies = the only depositable tokens.
-    const lockCustodies = new Set<string>();
-    for (const m of client.poolConfig.markets) {
-      const lockCu = client.poolConfig.custodies.find((cu) => cu.custodyAccount.equals(m.collateralCustody));
-      if (lockCu) lockCustodies.add(lockCu.symbol);
-    }
-    const poolSymbols = [...lockCustodies];
-    const stableSet = new Set(
-      client.poolConfig.custodies.filter((cu) => cu.isStable).map((cu) => cu.symbol),
-    );
+    // Depositable tokens + metadata come from the LIVE FLASH6 pool (Builder
+    // API), not the legacy FTv2 SDK poolConfig (which listed only 7 collateral
+    // tokens; FLASH6 has ~17 incl. JITOSOL/JUP/BONK/WIF/…).
+    const flashMarkets = getFlashMarketService();
+    await flashMarkets.ensureStatic();
+    await flashMarkets.refreshOi();
+    const poolSymbols = flashMarkets.collateralSymbols();
+    const stableSet = new Set(poolSymbols.filter((s) => flashMarkets.meta(s)?.isStable));
     const sorted = poolSymbols.sort((a, b) => {
       const aS = stableSet.has(a) ? 0 : 1;
       const bS = stableSet.has(b) ? 0 : 1;
@@ -2500,9 +2496,9 @@ export const magicAccount: ToolDefinition = {
     );
     tableLines.push(c.faint('─'.repeat(COL_TOKEN + COL_FLASH + COL_WALLET)));
     for (const sym of sorted) {
-      const cust = client.poolConfig.custodies.find((cu) => cu.symbol === sym)!;
-      const isStable = !!cust.isStable;
-      const decimals = cust.decimals;
+      const meta = flashMarkets.meta(sym);
+      const isStable = !!meta?.isStable;
+      const decimals = meta?.decimals ?? 6;
       const bal = basket.get(sym);
       const flashAvail = bal?.debits ?? 0;
       const flashPending = bal?.pendingCredits ?? 0;
@@ -2535,7 +2531,7 @@ export const magicAccount: ToolDefinition = {
     // Accent-bar panel — table lines sit directly after the bar (no 14-char
     // label gutter that renderCard forces on empty-label rows), matching the
     // dashboard / history panels.
-    const lines = panelHeader('Account', `${DIAMOND}  ${c.muted(`V2 mode · ${client.poolConfig.poolName}`)}`);
+    const lines = panelHeader('Account', `${DIAMOND}  ${c.muted(`V2 mode · ${context.config.poolName}`)}`);
     for (const t of tableLines) lines.push(panelRow(t));
     lines.push(`  ${panelBar()}`);
     lines.push(panelRow(`${c.long('⇣')}  ${c.long('deposit')}  ${c.muted('<token> <amount>')}     ${c.faint('wallet → Flash Account')}`));
@@ -3737,13 +3733,18 @@ export const magicDoctor: ToolDefinition = {
     // 1. PoolConfig
     {
       const r = await time('poolconfig', async () => {
-        const { getPoolConfig } = await import('../utils/pool-cache.js');
-        const cluster = (context.config.network === 'devnet' ? 'devnet' : 'mainnet-beta');
-        const pc = getPoolConfig(context.config.poolName, cluster);
-        return { custodies: pc.custodies.length, markets: pc.markets.length };
+        // Report the LIVE pool you trade on (FLASH6 via the Builder API), not
+        // the legacy FTv2 pool the SDK loads. The `sdk` probe below still
+        // validates the SDK itself.
+        const fm = getFlashMarketService();
+        await fm.ensureStatic();
+        await fm.refreshOi();
+        const markets = fm.tradeableSymbols().length;
+        if (markets === 0) throw new Error('Builder API returned no markets');
+        return { markets, collateral: fm.collateralSymbols().length };
       });
-      if (r.err) probes.push({ name: 'poolconfig', status: 'FAIL', ms: r.ms, detail: getErrorMessage(r.err), hint: 'Check MAGIC_NETWORK + MAGIC_POOL_NAME match a published pool.' });
-      else probes.push({ name: 'poolconfig', status: 'OK', ms: r.ms, detail: `${r.ok!.custodies} custodies · ${r.ok!.markets} markets` });
+      if (r.err) probes.push({ name: 'poolconfig', status: 'FAIL', ms: r.ms, detail: getErrorMessage(r.err), hint: 'Builder API (flashapi.trade) unreachable or returned no markets. Check network.' });
+      else probes.push({ name: 'poolconfig', status: 'OK', ms: r.ms, detail: `${r.ok!.markets} markets · ${r.ok!.collateral} collateral tokens` });
     }
 
     // 2. RPC manager

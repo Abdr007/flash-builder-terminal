@@ -27,11 +27,18 @@ export interface MarketOi {
   short: number; // USD
 }
 
-interface TokenRaw { symbol?: string; name?: string; mint?: string }
+export interface TokenMeta {
+  mint: string;
+  decimals: number;
+  isStable: boolean;
+}
+
+interface TokenRaw { symbol?: string; name?: string; mint?: string; decimals?: number; isStable?: boolean }
 interface CustodyRaw { pubkey?: string; account?: { mint?: string } }
 interface MarketRaw {
   account?: {
     targetCustody?: string;
+    collateralCustody?: string;
     side?: string;
     collectivePosition?: { sizeUsd?: number | string };
   };
@@ -48,14 +55,19 @@ function toArr<T>(x: unknown): T[] {
 
 export class FlashMarketService {
   private readonly baseUrl: string;
-  // symbol(UPPER) → custody pubkey
+  // symbol(UPPER) → custody pubkey  and its inverse
   private custodyBySymbol = new Map<string, string>();
+  private symbolByCustody = new Map<string, string>();
+  // symbol(UPPER) → token metadata (decimals, isStable, mint)
+  private metaBySymbol = new Map<string, TokenMeta>();
   private staticAt = -1;
   private staticInFlight: Promise<void> | null = null;
   // custody pubkey → OI
   private oiByCustody = new Map<string, MarketOi>();
   // custodies that are a market TARGET (i.e. tradeable), from /raw/markets
   private targetCustodies = new Set<string>();
+  // custodies used as COLLATERAL (depositable/lock tokens), from /raw/markets
+  private collateralCustodies = new Set<string>();
   private oiAt = -1;
   private oiInFlight: Promise<void> | null = null;
   private oiBackoffUntil = 0;
@@ -87,6 +99,23 @@ export class FlashMarketService {
     return cust ? this.oiByCustody.get(cust) : undefined;
   }
 
+  /** Token metadata (decimals, isStable, mint) for a symbol. */
+  meta(symbol: string): TokenMeta | undefined {
+    return this.metaBySymbol.get(symbol.toUpperCase());
+  }
+
+  /** Symbols usable as COLLATERAL (the depositable/lock tokens) in the FLASH6
+   *  pool. Falls back to all mapped symbols until /raw/markets has loaded. */
+  collateralSymbols(): string[] {
+    if (this.collateralCustodies.size === 0) return [...this.custodyBySymbol.keys()];
+    const out: string[] = [];
+    for (const cust of this.collateralCustodies) {
+      const sym = this.symbolByCustody.get(cust);
+      if (sym) out.push(sym);
+    }
+    return out;
+  }
+
   /** Load the static symbol→mint→custody maps (cached, deduped, never throws). */
   async ensureStatic(): Promise<void> {
     const now = Date.now();
@@ -101,9 +130,13 @@ export class FlashMarketService {
         const tokens = toArr<TokenRaw>(tk);
         const custs = toArr<CustodyRaw>(cu);
         const mintBySym = new Map<string, string>();
+        const meta = new Map<string, TokenMeta>();
         for (const t of tokens) {
           const sym = (t.symbol ?? t.name)?.toUpperCase();
-          if (sym && t.mint) mintBySym.set(sym, t.mint);
+          if (sym && t.mint) {
+            mintBySym.set(sym, t.mint);
+            meta.set(sym, { mint: t.mint, decimals: Number(t.decimals ?? 6), isStable: !!t.isStable });
+          }
         }
         const custByMint = new Map<string, string>();
         for (const c of custs) {
@@ -111,12 +144,15 @@ export class FlashMarketService {
           if (mint && c.pubkey) custByMint.set(mint, c.pubkey);
         }
         const next = new Map<string, string>();
+        const inv = new Map<string, string>();
         for (const [sym, mint] of mintBySym) {
           const cust = custByMint.get(mint);
-          if (cust) next.set(sym, cust);
+          if (cust) { next.set(sym, cust); inv.set(cust, sym); }
         }
         if (next.size > 0) {
           this.custodyBySymbol = next;
+          this.symbolByCustody = inv;
+          this.metaBySymbol = meta;
           this.staticAt = Date.now();
         }
       } catch {
@@ -141,10 +177,12 @@ export class FlashMarketService {
         if (mkts.length === 0) { this.noteOiFailure(); return; }
         const next = new Map<string, MarketOi>();
         const targets = new Set<string>();
+        const collateral = new Set<string>();
         for (const m of mkts) {
           const a = m.account;
           if (!a?.targetCustody) continue;
           targets.add(a.targetCustody);
+          if (a.collateralCustody) collateral.add(a.collateralCustody);
           const raw = Number(a.collectivePosition?.sizeUsd ?? 0);
           if (!Number.isFinite(raw) || raw <= 0) continue;
           const usd = raw / USD_MICRO;
@@ -155,6 +193,7 @@ export class FlashMarketService {
         }
         this.oiByCustody = next;
         this.targetCustodies = targets;
+        this.collateralCustodies = collateral;
         this.oiAt = Date.now();
         this.oiBackoffUntil = 0;
       } catch {
