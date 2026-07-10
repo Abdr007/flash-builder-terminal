@@ -285,6 +285,20 @@ MAGIC_LOG_LEVEL=info
 # text | json
 MAGIC_LOG_FORMAT=text
 
+# ─── AI intent layer (optional) ─────────────────────────────────────────────
+# Natural-language understanding for inputs the deterministic parser can't
+# handle. AI is an INTERPRETER ONLY: its output is re-parsed through the same
+# validation + a mandatory confirm as a typed command, and it is skipped
+# entirely when the parser already succeeds. With no key set (or MAGIC_AI=0 /
+# \`magic --no-ai\`) the terminal is 100% capable of trading — regex-only.
+# ANTHROPIC_API_KEY=sk-ant-...        # enables the AI layer when present
+# MAGIC_AI=0                          # hard-off even if a key is set
+# MAGIC_AI_MODEL=claude-haiku-4-5     # cheapest capable model (default)
+# MAGIC_AI_SESSION_TOKEN_CAP=60000    # hard per-session token cap → regex-only on hit
+# MAGIC_AI_DAILY_TOKEN_CAP=250000     # hard rolling-day token cap
+# MAGIC_AI_LOG_INPUTS=1               # opt-in: accrue a corpus for later tuning
+# MAGIC_AI_LOG_RAW=1                  # opt-in: store raw phrasings (default: hash only)
+
 # ─── Agent mode ─────────────────────────────────────────────────────────────
 # NO_DNA=1 enables agent mode (https://no-dna.org): JSON output, no prompts,
 # no ASCII art, debug verbosity, errors to stderr. Set in your shell when
