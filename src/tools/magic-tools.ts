@@ -574,29 +574,24 @@ interface V2CustodyRef {
   pubkey: PublicKey;
 }
 
-async function readV2ActivePoolCustodies(context: ToolContext): Promise<V2CustodyRef[]> {
-  const sdkClient = buildMagicClient(context);
-  const pool = sdkClient.poolConfig.poolAddress.toBase58();
-  const raw = await buildFlashV2Client(context).raw('custodies');
-  const seen = new Set<string>();
+async function readV2ActivePoolCustodies(_context: ToolContext): Promise<V2CustodyRef[]> {
+  // Depositable/collateral custodies for the LIVE FLASH6 pool (Builder API).
+  // The previous version filtered the API's custodies by the SDK's FTv2 pool
+  // address — which never matched — and fell back to the stale FTv2 custodies.
+  const fm = getFlashMarketService();
+  await fm.ensureStatic();
+  await fm.refreshOi();
   const refs: V2CustodyRef[] = [];
-  for (const item of records(raw)) {
-    const pubkey = fieldString(item, 'pubkey');
-    const account = isJsonRecord(item.account) ? item.account : item;
-    if (fieldString(account, 'pool') !== pool) continue;
-    const symbol = fieldString(account, 'symbol').toUpperCase();
-    if (!pubkey || !symbol || seen.has(symbol)) continue;
+  for (const symbol of fm.collateralSymbols()) {
+    const cust = fm.custodyOf(symbol);
+    if (!cust) continue;
     try {
-      refs.push({ symbol, pubkey: new PublicKey(pubkey) });
-      seen.add(symbol);
+      refs.push({ symbol: symbol.toUpperCase(), pubkey: new PublicKey(cust) });
     } catch {
-      /* ignore malformed pubkeys from the API */
+      /* ignore malformed pubkeys */
     }
   }
-  if (refs.length > 0) return refs.sort((a, b) => a.symbol.localeCompare(b.symbol));
-  return sdkClient.poolConfig.custodies
-    .map((cu) => ({ symbol: cu.symbol.toUpperCase(), pubkey: cu.custodyAccount }))
-    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  return refs.sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
 

@@ -104,6 +104,11 @@ export class FlashMarketService {
     return this.metaBySymbol.get(symbol.toUpperCase());
   }
 
+  /** Custody pubkey (base58) for a symbol, or undefined. */
+  custodyOf(symbol: string): string | undefined {
+    return this.custodyBySymbol.get(symbol.toUpperCase());
+  }
+
   /** Symbols usable as COLLATERAL (the depositable/lock tokens) in the FLASH6
    *  pool. Falls back to all mapped symbols until /raw/markets has loaded. */
   collateralSymbols(): string[] {
