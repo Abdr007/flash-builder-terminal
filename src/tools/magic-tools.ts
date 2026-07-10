@@ -741,9 +741,9 @@ export const magicVerify: ToolDefinition = {
     const lines = [
       `Verification — same accounts the Flash UI reads:`,
       ``,
-      `  Network:        ${sdkClient.network}`,
-      `  Pool:           ${sdkClient.poolConfig.poolName} (${sdkClient.poolConfig.poolAddress.toBase58()})`,
-      `  Program:        ${sdkClient.programId.toBase58()}`,
+      `  Network:        ${context.config.network}`,
+      `  Pool:           ${context.config.poolName}`,
+      `  Program:        ${context.config.network === 'devnet' ? 'FMTgsEDaPPfJi1PKD67McLTC5n833T4irbBP53LLxtvj' : 'FLASH6Lo6h3iasJKWDs2F8TkW2UKf3s15C8PMGuVfgBn'}  (FLASH6 · Builder API)`,
       `  Wallet:         ${owner}`,
       ``,
       `  Basket PDA:     ${basketPubkey || '(not initialized)'}`,
