@@ -2366,7 +2366,7 @@ export const magicVault: ToolDefinition = {
       message: renderCard({
         status: 'Vault',
         tone: 'info',
-        subtitle: `${DIAMOND}  ${c.muted(`${visibleBalances.length} tokens · ${context.config.network}`)}`,
+        subtitle: `${DIAMOND}  ${c.muted(`${visibleBalances.length} ${visibleBalances.length === 1 ? 'token' : 'tokens'} · ${context.config.network}`)}`,
         rows,
         columns: 1,
       }),
