@@ -2605,10 +2605,10 @@ export const magicAccount: ToolDefinition = {
 
 export const magicReverse: ToolDefinition = {
   name: 'magicReverse',
-  description: 'Close current position and open opposite side. args: market, side; leverage defaults to the existing position. Collateral carries over automatically (the API has no collateral input for reverse).',
+  description: 'Close current position and open opposite side. args: market, [side]; side is optional and resolved from the open position when omitted. leverage defaults to the existing position. Collateral carries over automatically (the API has no collateral input for reverse).',
   parameters: z.object({
     market: z.string(),
-    side: z.enum(['long', 'short']),
+    side: z.enum(['long', 'short']).optional(),
     leverage: z.number().positive().optional(),
   }),
   async execute(params, context): Promise<ToolResult> {
@@ -2617,19 +2617,28 @@ export const magicReverse: ToolDefinition = {
 
     let leverage = params.leverage as number | undefined;
     const target = String(params.market).toUpperCase();
-    const targetSide = v2UiSide(String(params.side));
+    // Side is OPTIONAL: `reverse SOL` with no side resolves against the ACTUAL
+    // open position — reverse the unambiguous one, and refuse (ask) if both a
+    // long and a short are held, rather than silently assuming long.
+    const explicitSide = params.side ? v2UiSide(String(params.side)) : undefined;
 
     // Always read the existing position: reverse REQUIRES one, we need it to
-    // derive leverage when omitted, and to show the collateral that actually
-    // carries over. The reversePosition builder reuses the freed collateral —
-    // there is no collateral input to the API — so we never accept or invent one.
+    // derive leverage when omitted, and to show the collateral that carries over.
     let positions = await v2Positions(client, owner);
-    let existing = positions.find((p) => p.market === target && p.side === targetSide);
-    // Only retry when the basket was empty — that's the ER-replication race.
-    if (!existing && positions.length === 0) {
+    if (positions.length === 0) {
+      // ER-replication race — retry once before concluding "no position".
       await new Promise((r) => setTimeout(r, 500));
       positions = await v2Positions(client, owner);
-      existing = positions.find((p) => p.market === target && p.side === targetSide);
+    }
+    const onMarket = positions.filter((p) => p.market === target);
+    const existing = explicitSide
+      ? onMarket.find((p) => p.side === explicitSide)
+      : onMarket.length === 1 ? onMarket[0] : undefined;
+    if (!existing && !explicitSide && onMarket.length > 1) {
+      return {
+        success: false,
+        message: `You hold both a long and a short on ${target}. Specify which to reverse: \`reverse ${target} long\` or \`reverse ${target} short\`.`,
+      };
     }
     if (!existing) {
       const summary = positions.length === 0
@@ -2637,16 +2646,18 @@ export const magicReverse: ToolDefinition = {
         : `basket has ${positions.length}: ${positions.map((p) => `${p.market}/${p.side}`).join(', ')}`;
       return {
         success: false,
-        message: `No open ${params.side} position on ${target} to reverse. ${summary}.`,
+        message: `No open ${explicitSide ? explicitSide + ' ' : ''}position on ${target} to reverse. ${summary}.`,
       };
     }
+    // Resolved side (explicit or inferred from the single open position).
+    const targetSide = existing.side;
     // Guard against div-by-zero. A position with collateralUsd=0 means the
     // on-chain state is corrupt or already fully liquidated.
     if (leverage === undefined) {
       if (!Number.isFinite(existing.collateralUsd) || existing.collateralUsd <= 0) {
         return {
           success: false,
-          message: `Cannot infer leverage for ${target} ${params.side}: existing position has zero or invalid collateral. Pass leverage explicitly.`,
+          message: `Cannot infer leverage for ${target} ${targetSide}: existing position has zero or invalid collateral. Pass leverage explicitly.`,
         };
       }
       leverage = existing.sizeUsd / existing.collateralUsd;
@@ -2656,7 +2667,7 @@ export const magicReverse: ToolDefinition = {
     const result = await signV2(context, 'reversePosition', {
       owner,
       marketSymbol: String(params.market).toUpperCase(),
-      side: v2Side(String(params.side)),
+      side: v2Side(targetSide),
       leverage,
       slippagePercentage: slippageStr(params),
       // Enforce MAX_* caps on the reversed position (collateral carries over,
@@ -2681,7 +2692,7 @@ export const magicReverse: ToolDefinition = {
         // `LONG → SHORT` variant tried to encode the flip in the
         // subtitle but the status line ("Position Reversed") already
         // carries that meaning.
-        subtitle: marketHeader(market, String(params.side), leverage),
+        subtitle: marketHeader(market, targetSide, leverage),
         columns: 1,
         rows: [
           { label: 'Entry',       value: entry > 0 ? c.primary(`$${entry.toFixed(4)}`) : c.muted('—') },

@@ -54,3 +54,21 @@ describe('spelled-out numbers fold compositionally', () => {
     expect(r?.alias).toBe('close-all');
   });
 });
+
+describe('reverse — side is optional (resolved from the open position)', () => {
+  const rev = (line: string): { market?: string; side?: string } => {
+    const r = parseCommandForTest(line, config);
+    expect(r?.alias).toBe('reverse');
+    return r!.params as { market?: string; side?: string };
+  };
+  it('omits side when none is given, so the tool resolves it (not a silent long)', () => {
+    const p = rev('reverse SOL');
+    expect(p.market).toBe('SOL');
+    expect(p.side).toBeUndefined();
+  });
+  it('preserves an explicit side (incl. buy/sell aliases)', () => {
+    expect(rev('reverse SOL short').side).toBe('short');
+    expect(rev('flip SOL long').side).toBe('long');
+    expect(rev('reverse SOL buy').side).toBe('long');
+  });
+});
