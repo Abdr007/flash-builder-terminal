@@ -17,7 +17,7 @@ import { getPoolConfig } from '../utils/pool-cache.js';
 
 import type { MagicConfig, ToolContext, ToolResult } from '../types/index.js';
 import { ToolEngine, getEngine } from '../tools/engine.js';
-import { prewarmMagicClient, shutdownMagicClients, journalMagicTrade } from '../tools/magic-tools.js';
+import { prewarmMagicClient, shutdownMagicClients, journalMagicTrade, buildFlashV2Client } from '../tools/magic-tools.js';
 import { WalletManager } from '../wallet/walletManager.js';
 import { initSigningGuard } from '../security/signing-guard.js';
 import { initLogger, getLogger, LogLevel } from '../utils/logger.js';
@@ -1117,6 +1117,18 @@ export class MagicTerminal {
 
     // Pre-warm the SDK client so the first trade is fast.
     if (this.walletManager.isConnected) {
+      // Warm the Builder-API connection (DNS + TCP + TLS handshake) so the FIRST
+      // trade doesn't pay a cold ~100-250ms handshake to flashapi. The real
+      // trade path is the Builder client (the ER magic-client prewarmed below is
+      // only for the pre-Enter preview). A bare /health GET is read-only and
+      // best-effort — it never blocks startup and a floating rejection is caught.
+      try {
+        void buildFlashV2Client(this.context).health().catch(() => {
+          /* best-effort connection warm; result unused */
+        });
+      } catch {
+        /* warm is best-effort; never block startup */
+      }
       const kp = this.walletManager.getKeypair();
       if (kp) {
         try {
@@ -1217,6 +1229,16 @@ export class MagicTerminal {
     this.rl.on('line', async (raw) => {
       if (this.processing) {
         // Buffered input is dropped silently while a command runs to avoid races.
+        return;
+      }
+      // Reject an oversized line BEFORE any processing. Node readline puts no
+      // length limit on a 'line' event, so a multi-MB paste would otherwise be
+      // trimmed, lower-cased, hashed and regex-scanned ~6× (freezing the REPL
+      // and spiking memory) only to be dropped by the 2KB cap deep inside the
+      // parser. Cap early — a real command is never anywhere near this long.
+      if (raw.length > 4000) {
+        process.stdout.write(`${chalk.red('error: ')}input too long (${raw.length} chars) — ignored\n`);
+        this.rl.prompt();
         return;
       }
       const line = raw.trim();
