@@ -242,7 +242,7 @@ export function completeReplLine(line: string, marketSymbols: Set<string>): [str
       ...Object.keys(VERB_ALIASES),
       ...MARKET_COMPLETION_VERBS, // long/short/open/close/… — the primary trading verbs
       'deposit', 'withdraw', 'setup', 'portfolio', 'status', 'close-all',
-      'stake', 'unstake', 'claim', 'referral',
+      'stake', 'unstake', 'claim', 'referral', 'flp', 'earn',
       'help', 'exit', 'quit', 'clear', 'wallet', 'rpc', 'monitor', 'watch',
       'kill', 'resume', 'init', 'env', 'feedback', 'ai',
     ]);
@@ -385,6 +385,9 @@ const SIGNING_VERBS = new Set<string>([
   'unstake',
   'claim',
   'referral',
+  'flp-deposit',
+  'flp-withdraw',
+  'flp-claim',
   'request-withdrawal',
   'withdrawal-settle',
   'settle',
@@ -869,6 +872,15 @@ const HELP_GROUPS: HelpGroup[] = [
     ],
   },
   {
+    title: 'Earn / Liquidity (FLP)',
+    entries: [
+      { cmd: 'flp',                            hint: 'Flash Liquidity Pools overview — pools + TVL' },
+      { cmd: 'flp deposit USDC 50',            hint: 'Provide liquidity — mint auto-compounding FLP' },
+      { cmd: 'flp withdraw USDC 10',           hint: 'Withdraw liquidity — burn FLP back to a token (0.05% fee)' },
+      { cmd: 'flp claim',                      hint: 'Claim staked-FLP (sFLP) rewards' },
+    ],
+  },
+  {
     title: 'Token / FAF Staking',
     entries: [
       { cmd: 'stake 100',                      hint: 'Stake 100 FAF — revenue share + fee discounts + referral tiers' },
@@ -1342,6 +1354,9 @@ export class MagicTerminal {
       'unstake':           'Unstake FAF',
       'claim':             'Claim',
       'referral':          'Set Referral',
+      'flp-deposit':       'Provide Liquidity',
+      'flp-withdraw':      'Withdraw Liquidity',
+      'flp-claim':         'Claim FLP Rewards',
       'settle':            'Settle Custody',
       'setup':             'On-Chain Setup',
       'builder':           'V2 Builder',
@@ -1506,6 +1521,13 @@ export class MagicTerminal {
       const ref = String(parsed.params.referrer ?? 'Dvvzg9rwaNfUqBSscoMZJa5CHFv8Lm94ngZrRyLGLfmK');
       subtitle = `${DIAMOND}  ${c.muted('create referral relationship')}`;
       rows.push({ label: 'Referrer', value: c.primary(`${ref.slice(0, 6)}…${ref.slice(-4)}${parsed.params.referrer ? '' : ' (default)'}`) });
+    } else if (parsed.alias === 'flp-deposit' || parsed.alias === 'flp-withdraw') {
+      const token = String(parsed.params.token ?? 'USDC').toUpperCase();
+      const amt = Number(parsed.params.amount ?? 0);
+      const dep = parsed.alias === 'flp-deposit';
+      subtitle = `${DIAMOND}  ${c.muted(dep ? `${token} → FLP · auto-compounding` : `FLP → ${token} · 0.05% burn fee`)}`;
+      rows.push({ label: dep ? 'Deposit' : 'Burn', value: c.primary.bold(dep ? `${amt} ${token}` : `${amt} FLP`) });
+      if (!dep) rows.push({ label: 'Receive in', value: c.primary(token) });
     } else {
       // Generic fallback — render whichever params are set.
       const market = String(parsed.params.market ?? '').toUpperCase();

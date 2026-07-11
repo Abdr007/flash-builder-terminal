@@ -669,6 +669,21 @@ export function interpretCommand(rawInput: string, _config?: MagicConfig): Parse
     const m = stripped.match(/^(?:referral|refer)\s+([1-9A-HJ-NP-Za-km-z]{32,44})$/);
     if (m) return { alias: 'referral', params: { referrer: m[1] } };
   }
+
+  // ─── Earn / FLP liquidity ─────────────────────────────────────────────────
+  {
+    if (/^(?:flp|earn|pools?)$/.test(lower)) return { alias: 'flp', params: {} };
+    if (/^flp\s+claim$/.test(lower)) return { alias: 'flp-claim', params: {} };
+    // deposit: token then amount, OR amount then token
+    let m = lower.match(/^flp\s+deposit\s+([a-z]+)\s+\$?(\d+(?:\.\d+)?)$/);
+    if (m) return { alias: 'flp-deposit', params: { token: m[1].toUpperCase(), amount: parseFloat(m[2]) } };
+    m = lower.match(/^flp\s+deposit\s+\$?(\d+(?:\.\d+)?)\s+([a-z]+)$/);
+    if (m) return { alias: 'flp-deposit', params: { token: m[2].toUpperCase(), amount: parseFloat(m[1]) } };
+    m = lower.match(/^flp\s+withdraw\s+([a-z]+)\s+\$?(\d+(?:\.\d+)?)$/);
+    if (m) return { alias: 'flp-withdraw', params: { token: m[1].toUpperCase(), amount: parseFloat(m[2]) } };
+    m = lower.match(/^flp\s+withdraw\s+\$?(\d+(?:\.\d+)?)\s+([a-z]+)$/);
+    if (m) return { alias: 'flp-withdraw', params: { token: m[2].toUpperCase(), amount: parseFloat(m[1]) } };
+  }
   {
     // `withdraw 25 USDC` / `withdraw $25 USDC`
     const m = lower.match(/^withdraw\s+\$?(\d+(?:\.\d+)?)\s+([a-z]+)$/);

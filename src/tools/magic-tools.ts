@@ -4334,11 +4334,96 @@ export const magicReferral: ToolDefinition = {
   },
 };
 
+// ─── Earn / FLP liquidity ───────────────────────────────────────────────────
+// Compounding FLP (auto-compounding LP token). The pool is selected by the
+// token symbol (verified against the live builder). Funds-route builders.
+export const magicFlpDeposit: ToolDefinition = {
+  name: 'magicFlpDeposit',
+  description: 'Provide liquidity — mint auto-compounding FLP. args: token symbol, amount (human units).',
+  parameters: z.object({ token: z.string(), amount: z.number().positive() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const token = String(params.token).toUpperCase();
+    const amount = params.amount as number;
+    const result = await signV2(context, 'addCompoundingLiquidity', {
+      owner, inputTokenSymbol: token, amount: uiAmount(amount),
+    });
+    return tokenCard('Liquidity Added', 'open', `${token} → FLP · auto-compounding yield`, [
+      { label: 'Deposit', value: c.primary.bold(`${amount} ${token}`) },
+      { label: 'Receive', value: c.muted('FLP (auto-compounding LP)') },
+    ], result, context);
+  },
+};
+
+export const magicFlpWithdraw: ToolDefinition = {
+  name: 'magicFlpWithdraw',
+  description: 'Withdraw liquidity — burn FLP back to a token. args: token symbol, amount (FLP units).',
+  parameters: z.object({ token: z.string(), amount: z.number().positive() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const token = String(params.token).toUpperCase();
+    const amount = params.amount as number;
+    const result = await signV2(context, 'removeCompoundingLiquidity', {
+      owner, outputTokenSymbol: token, amount: uiAmount(amount),
+    });
+    return tokenCard('Liquidity Removed', 'close', `FLP → ${token} · 0.05% burn fee applies`, [
+      { label: 'Burn', value: c.primary.bold(`${amount} FLP`) },
+      { label: 'Receive in', value: c.primary(token) },
+    ], result, context);
+  },
+};
+
+export const magicFlpClaim: ToolDefinition = {
+  name: 'magicFlpClaim',
+  description: 'Claim staked-FLP (sFLP) rewards.',
+  parameters: z.object({}),
+  async execute(_params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const result = await signV2(context, 'collectStakeReward', { owner });
+    return tokenCard('FLP Rewards Claimed', 'close', 'staked-FLP rewards → wallet', [
+      { label: 'Claim', value: c.primary('sFLP rewards') },
+    ], result, context);
+  },
+};
+
+export const magicFlp: ToolDefinition = {
+  name: 'magicFlp',
+  description: 'Flash Liquidity Pools overview — pools + your FLP token balances.',
+  parameters: z.object({}),
+  async execute(_params, context): Promise<ToolResult> {
+    const client = buildFlashV2Client(context);
+    const poolData = await client.poolData().catch(() => null);
+    const rows: Array<{ label: string; value: string }> = [];
+    for (const pool of isPoolData(poolData)) {
+      const name = fieldString(pool, 'name') || fieldString(pool, 'poolName');
+      if (!name) continue;
+      const aum = fieldNumber(pool, 'aumUsd') || fieldNumber(pool, 'equityUsd');
+      rows.push({ label: name, value: aum > 0 ? c.primary(`TVL ${formatUsd(aum)}`) : c.muted('—') });
+    }
+    if (rows.length === 0) rows.push({ label: '', value: c.muted('pool data unavailable — try again') });
+    rows.push({ label: '', value: c.faint('deposit: flp deposit <token> <amt>  ·  withdraw: flp withdraw <token> <amt>  ·  claim: flp claim') });
+    return {
+      success: true,
+      message: renderCard({
+        status: 'Flash Liquidity Pools',
+        tone: 'info',
+        subtitle: `${DIAMOND}  ${c.muted('provide liquidity, earn yield')}`,
+        columns: 1,
+        rows,
+      }),
+    };
+  },
+};
+
 export const magicTools: ToolDefinition[] = [
   magicStake,
   magicUnstake,
   magicClaim,
   magicReferral,
+  magicFlp,
+  magicFlpDeposit,
+  magicFlpWithdraw,
+  magicFlpClaim,
   magicVault,
   magicSettle,
   magicStatus,

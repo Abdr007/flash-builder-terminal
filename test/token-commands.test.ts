@@ -39,3 +39,19 @@ describe('token/FAF command parsing', () => {
     expect(interpretCommand('claiming')).not.toMatchObject({ alias: 'claim' });
   });
 });
+
+describe('earn/FLP command parsing', () => {
+  it('flp overview + aliases', () => {
+    expect(interpretCommand('flp')).toEqual({ alias: 'flp', params: {} });
+    expect(interpretCommand('earn')).toEqual({ alias: 'flp', params: {} });
+    expect(interpretCommand('pools')).toEqual({ alias: 'flp', params: {} });
+  });
+  it('flp deposit — both arg orders', () => {
+    expect(interpretCommand('flp deposit USDC 50')).toEqual({ alias: 'flp-deposit', params: { token: 'USDC', amount: 50 } });
+    expect(interpretCommand('flp deposit 50 usdc')).toEqual({ alias: 'flp-deposit', params: { token: 'USDC', amount: 50 } });
+  });
+  it('flp withdraw + claim', () => {
+    expect(interpretCommand('flp withdraw USDC 10')).toEqual({ alias: 'flp-withdraw', params: { token: 'USDC', amount: 10 } });
+    expect(interpretCommand('flp claim')).toEqual({ alias: 'flp-claim', params: {} });
+  });
+});
