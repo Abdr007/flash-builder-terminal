@@ -22,9 +22,12 @@
  */
 export function redactCommonSecrets(text: string): string {
   return text
-    // Generic api_key= / token= / secret= / auth= query params.
-    .replace(/api[_-]?key=[^&\s"]+/gi, 'api_key=***')
-    .replace(/(?:^|[?&])(token|secret|auth)=[^&\s"']+/gi, (_m, k: string) => `${_m.startsWith('?') || _m.startsWith('&') ? _m[0] : ''}${k}=***`)
+    // Sensitive `key=value` pairs ANYWHERE (query param, log line, env dump) —
+    // matched at a word boundary so `token=…` in prose is redacted, not just in a
+    // URL query. `\b` is zero-width so a leading `?`/`&`/space is preserved.
+    // Over-redaction is the safe direction for a credential scrubber.
+    .replace(/api[_-]?key=[^&\s"']+/gi, 'api_key=***')
+    .replace(/\b(token|secret|auth|apikey|password|passwd|pwd|mnemonic|seed[_-]?phrase|private[_-]?key|privatekey|secretkey)=[^&\s"']+/gi, (_m, k: string) => `${k}=***`)
     // Vendor keys with stable prefixes.
     .replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, 'sk-ant-***')
     .replace(/gsk_[A-Za-z0-9_-]{20,}/g, 'gsk_***')
