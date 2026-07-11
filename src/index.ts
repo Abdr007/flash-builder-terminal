@@ -33,7 +33,7 @@ import { MagicTerminal } from './cli/terminal.js';
 import { c, DIAMOND, BRAND_NAME_UPPER } from './cli/magic-theme.js';
 import { initLogger, getLogger, LogLevel } from './utils/logger.js';
 import { setupWallet } from './cli/wallet-flows.js';
-import { animateHero } from './cli/banner.js';
+import { animateHero, bootSequence } from './cli/banner.js';
 import { COMMAND_ALIASES } from './cli/interpreter.js';
 
 function printHelp(): void {
@@ -284,6 +284,11 @@ async function main(): Promise<void> {
     new Promise<string>((resolveAsk) => rl.question(q, (a) => resolveAsk(a)));
 
   await animateHero();
+  await bootSequence([
+    { label: 'Network', detail: `${config.network} · ${config.poolName}` },
+    { label: 'RPC', detail: rpcManager.activeEndpoint.label },
+    { label: 'Router', detail: config.erRpcUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') },
+  ]);
 
   let walletInfo: { address: string; name: string } | null = null;
   try {

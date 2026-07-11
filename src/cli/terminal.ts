@@ -22,7 +22,7 @@ import { WalletManager } from '../wallet/walletManager.js';
 import { initSigningGuard } from '../security/signing-guard.js';
 import { initLogger, getLogger, LogLevel } from '../utils/logger.js';
 import { getErrorMessage } from '../utils/retry.js';
-import { renderSession } from './banner.js';
+import { animateSession } from './banner.js';
 import { interpretCommand, configureSymbols } from './interpreter.js';
 import { loadAiConfig } from '../ai/config.js';
 import { IntentResolver, type ResolveResult } from '../ai/interpret.js';
@@ -1065,15 +1065,13 @@ export class MagicTerminal {
     });
 
     const programId = this.resolveProgramId();
-    process.stdout.write(
-      renderSession({
-        network: this.config.network,
-        pool: this.config.poolName,
-        programId,
-        walletAddress: this.walletManager.address ?? undefined,
-        erUrl: this.config.erRpcUrl,
-      }),
-    );
+    await animateSession({
+      network: this.config.network,
+      pool: this.config.poolName,
+      programId,
+      walletAddress: this.walletManager.address ?? undefined,
+      erUrl: this.config.erRpcUrl,
+    });
 
     // Loud warning when the user is on the public Solana RPC. Public RPCs
     // are rate-limited so aggressively that the polling-side of every L1 op
