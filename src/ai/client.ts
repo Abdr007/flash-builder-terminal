@@ -12,6 +12,7 @@
  */
 
 import type { AiConfig } from './config.js';
+import { readJsonCapped } from '../utils/fetch-json.js';
 
 export interface AiClientResult {
   /** Canonical command line, or null if the model judged the input non-actionable. */
@@ -96,7 +97,10 @@ async function callOnce(line: string, cfg: AiConfig): Promise<AiClientResult | A
     });
     const latencyMs = Date.now() - t0;
     if (res.status === 429 || res.status >= 500) return { error: `http ${res.status}` };
-    const j = (await res.json()) as MessagesResponse;
+    // Byte-cap the read: the AI endpoint is user-configurable (AI_ENDPOINT), so
+    // a hostile/misbehaving endpoint must not be able to stream an unbounded
+    // body within the timeout and OOM the REPL. A real intent response is tiny.
+    const j = await readJsonCapped<MessagesResponse>(res);
     if (!res.ok || j.error) return { error: j.error?.message ?? `http ${res.status}` };
     const block = (j.content ?? []).find((b) => b.type === 'tool_use' && b.name === 'emit_intent');
     const raw = block?.input?.command;

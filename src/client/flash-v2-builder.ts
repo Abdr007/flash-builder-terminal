@@ -4,6 +4,7 @@ import { assertNotKilled } from '../security/kill-switch.js';
 import { getSigningGuard, type SigningAuditEntry } from '../security/signing-guard.js';
 import { validateVersionedTxPrograms, assertRequiredSigners } from '../security/validate-programs.js';
 import { readTextCapped } from '../utils/fetch-json.js';
+import { verifyKeypairIntact } from './keypair-integrity.js';
 
 export const FLASH_V2_API_URL = 'https://flashapi.trade';
 
@@ -860,6 +861,16 @@ export class FlashV2BuilderClient {
       }
       // ─────────────────────────────────────────────────────────────────────────
 
+      // Integrity check IMMEDIATELY before signing. `owner` was captured, then
+      // build() awaited a network round-trip; if an idle-disconnect fired during
+      // that await it zeroes the key buffer that Keypair holds by reference, and
+      // tx.sign would emit a signature that can't verify against the owner —
+      // wasting a submit and confusing the user. Mirror magic-client's guard:
+      // throw a clear error instead. Fail-closed; only signers[0] (the owner
+      // keypair) can be wiped this way — a generated fee-payer cannot.
+      if (signers[0] && !verifyKeypairIntact(signers[0], owner)) {
+        throw new FlashV2FieldError('wallet key unavailable (disconnected mid-sign) — reconnect and retry');
+      }
       tx.sign(signers);
       const raw = tx.serialize();
       lastSignedSig = tx.signatures[0] && tx.signatures[0].length === 64 ? bs58.encode(tx.signatures[0]) : null;

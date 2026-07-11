@@ -60,6 +60,7 @@ import { getSigningGuard } from '../security/signing-guard.js';
 import { assertNotKilled } from '../security/kill-switch.js';
 import { getLogger } from '../utils/logger.js';
 import { getErrorMessage } from '../utils/retry.js';
+import { readJsonCapped } from '../utils/fetch-json.js';
 import { ReadCache } from '../utils/read-cache.js';
 import { getPoolConfig } from '../utils/pool-cache.js';
 import { mapSdkError, toTradingError } from './sdk-errors.js';
@@ -3315,7 +3316,9 @@ export class MagicTradeClient {
         signal: AbortSignal.timeout(5_000),
       });
       if (res.ok) {
-        const json = (await res.json()) as { result?: { identity?: string } };
+        // Byte-cap: the ER endpoint is configurable/untrusted — don't let a
+        // hostile router stream an unbounded body within the timeout.
+        const json = await readJsonCapped<{ result?: { identity?: string } }>(res);
         if (json.result?.identity) identity = new PublicKey(json.result.identity);
       }
     } catch {
