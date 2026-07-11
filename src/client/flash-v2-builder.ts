@@ -51,6 +51,24 @@ function deriveTradeLimits(name: string, body: JsonObject): TradeLimitParams | n
   return null;
 }
 
+// Builders that GROW a position's size or leverage. Every one of these must be
+// bounded by the configured MAX_* caps before signing. `openPosition` derives
+// its limits from the request body above; the rest cannot (their bodies carry
+// token amounts / deltas, not the resulting USD exposure) and MUST be handed an
+// explicit `opts.tradeLimits` computed from the existing position by the caller.
+//
+// When a risk-bearing builder reaches the sign boundary with no resolvable
+// limits AND a cap is configured, we FAIL CLOSED (refuse to sign) rather than
+// silently bypass the operator's risk control. `addCollateral` is deliberately
+// absent: it REDUCES leverage, so blocking it would break a trader de-risking a
+// position to avoid liquidation.
+const RISK_BEARING_BUILDERS: ReadonlySet<string> = new Set([
+  'openPosition',
+  'increasePosition',
+  'reversePosition',
+  'removeCollateral',
+]);
+
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
@@ -706,6 +724,10 @@ export class FlashV2BuilderClient {
       validateVersionedTxPrograms(tx, name);
       assertRequiredSigners(tx, signers.map((s) => s.publicKey.toBase58()), name);
       // 3. Trade limits (MAX_LEVERAGE / MAX_COLLATERAL / MAX_POSITION_SIZE).
+      //    Enforced on EVERY size/leverage-growing builder — not just
+      //    openPosition. Callers hand size-growing ops (increase / reverse /
+      //    removeCollateral, and the auto-merge open→increase path) an explicit
+      //    `opts.tradeLimits` computed from the resulting position exposure.
       const tl = opts.tradeLimits ?? deriveTradeLimits(name, body as JsonObject);
       if (tl) {
         const check = guard.checkTradeLimits(tl);
@@ -713,6 +735,15 @@ export class FlashV2BuilderClient {
           try { guard.logAudit({ timestamp: new Date().toISOString(), type: auditType(name), market: tl.market, collateral: tl.collateral, leverage: tl.leverage, sizeUsd: tl.sizeUsd, walletAddress: owner, result: 'rejected', reason: check.reason }); } catch { /* audit best-effort */ }
           throw new FlashV2FieldError(check.reason ?? 'trade limit exceeded');
         }
+      } else if (RISK_BEARING_BUILDERS.has(name) && guard.capsConfigured()) {
+        // Fail CLOSED: a position-growing op reached the sign boundary with no
+        // resolvable limits while the operator has caps configured. Refuse
+        // rather than sign past an unenforceable cap.
+        const reason =
+          `refusing to sign ${name}: per-trade risk caps are configured but this operation's ` +
+          `size/leverage could not be resolved to enforce them. Retry, or clear MAX_* caps to override.`;
+        try { guard.logAudit({ timestamp: new Date().toISOString(), type: auditType(name), walletAddress: owner, result: 'rejected', reason }); } catch { /* audit best-effort */ }
+        throw new FlashV2FieldError(reason);
       }
       // 4. Rate limit (records a slot on success — keep it last before signing).
       const rate = guard.checkRateLimit();
