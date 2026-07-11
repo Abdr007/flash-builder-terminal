@@ -47,6 +47,10 @@ You'll get an acknowledgement within **48 hours** and a status update within **7
 - Background tickers (alerts, ER health, RPC probes, reconciler) all have re-entrancy guards so a slow upstream cannot stack overlapping ticks
 - Reconciler is generation-counted: results from a pre-`wallet use` invocation cannot clobber state captured under the new wallet
 - Program-id allowlist enforced before every send; trusted-ix cache versioned against the allowlist so a runtime allowlist change invalidates cached verdicts
+- Money-critical dependencies are **exact-pinned** (no `^`/`~`): `@flash_trade/magic-trade-client`, `@solana/web3.js`, `@solana/spl-token`, `@coral-xyz/anchor`, `bn.js`, `bs58`, `decimal.js` — a malicious minor of a package that signs/serializes transactions cannot be pulled by a fresh `npx`/`-g` install, which does not consume the repo lockfile
+- Pasted key material (base58/hex private key, JSON byte array, BIP39 mnemonic) is detected and refused before the AI-intent layer transmits or logs it — a secret typed at the REPL never reaches the model API or the corpus log
+- ER submit path fails **closed** on `already processed` (does not resubmit with a fresh blockhash), preventing double-execution of additive operations
+- Per-trade USD risk caps are not derivable from a non-USD-stable collateral token's raw amount, so such opens **fail closed** when caps are configured rather than being under-counted
 
 ## Known upstream advisories (no patched version available)
 
@@ -62,6 +66,11 @@ exploitability in this project's surface.
 
 `@solana/spl-token` "fix" reported by npm is a major *downgrade* to 0.1.8 and
 is not viable. Both advisories are reviewed at every dependency bump.
+
+`brace-expansion` (GHSA-jxxr-4gwj-5jf2, MODERATE) is a **dev-only** transitive
+dep (via `eslint`/`glob`); the ReDoS-style range does not run in the shipped
+`dist/`. Patched by `npm audit fix` on the next online install — it does not
+affect the published package.
 
 **Resolved transitive advisories** (fixed in the lockfile): `uuid`
 (GHSA-w5hq-g745-h8pq) via a scoped `overrides` forcing `jayson`'s `uuid@8` →
