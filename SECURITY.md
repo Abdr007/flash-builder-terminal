@@ -54,14 +54,14 @@ You'll get an acknowledgement within **48 hours** and a status update within **7
 
 ## Known upstream advisories (no patched version available)
 
-`npm audit` reports the following CRITICAL / HIGH advisories. Each is in an
-upstream dependency this project pins via the Flash Magic Trade SDK; no
-patched version exists on npm at the time of writing. Reviewed for practical
-exploitability in this project's surface.
+`npm audit` reports the following HIGH advisories. Each is in an upstream
+dependency this project pins via the Flash Magic Trade SDK; no patched version
+exists on npm at the time of writing. Reviewed for practical exploitability in
+this project's surface. **There are no remaining CRITICAL advisories** (the
+`dcap-qvl-web` critical was resolved — see "Resolved transitive advisories").
 
 | Advisory | Path | Status |
 |---|---|---|
-| GHSA-796p-j2gh-9m2q (CRITICAL) — `@phala/dcap-qvl-web` "Missing Verification for QE Identity" | pulled in by `@magicblock-labs/ephemeral-rollups-sdk` 0.6.5; the Flash SDK hard-pins this exact ER SDK version, and our codebase never imports the ER SDK directly. The vulnerable Phala TEE-attestation code path is not invoked by a transaction-signing client. **No fix exists — npm's latest `0.3.3` is itself in the vulnerable range `<=0.3.3`.** ER SDK `0.15.5` switches to the non-vulnerable `@phala/dcap-qvl`, but overriding the ER SDK 9 minors forward is a money-path change that requires devnet validation. Mitigation: ER router URL is constrained by `validateRpcUrl`. | **Dismissed in Dependabot (`not_used`). Will adopt when the Flash SDK bumps the ER SDK, verified with a devnet smoke.** |
 | GHSA-3gc7-fjrx-p6mg (HIGH) — `bigint-buffer` `toBigIntLE()` buffer overflow | pulled in transitively by `@solana/spl-token@0.4.14` → `@solana/buffer-layout-utils` (even latest `0.3.0` still depends on it). **All published versions** of `bigint-buffer` (≤1.1.5) are flagged; no patched version exists on npm (unmaintained since 2022). The function decodes token-account data with protocol-fixed buffer sizes; the overflow requires an attacker-controlled *oversized* buffer, which is not reachable here. Mitigation: `validateRpcUrl` restricts RPC origins; failover candidates are re-validated; only known token mints are queried. | **Dismissed in Dependabot (`tolerable_risk`). Blocked on upstream patch / `buffer-layout-utils` dropping the dep.** |
 
 `@solana/spl-token` "fix" reported by npm is a major *downgrade* to 0.1.8 and
@@ -72,9 +72,20 @@ dep (via `eslint`/`glob`); the ReDoS-style range does not run in the shipped
 `dist/`. Patched by `npm audit fix` on the next online install — it does not
 affect the published package.
 
-**Resolved transitive advisories** (fixed in the lockfile): `uuid`
-(GHSA-w5hq-g745-h8pq) via a scoped `overrides` forcing `jayson`'s `uuid@8` →
-`11.1.1` (jayson only calls `uuid.v4()`, stable across majors); and `esbuild`
-(GHSA-g7r4-m6w7-qqqr, dev-only) via bumping `tsx` to 4.23 (esbuild 0.28.1).
+**Resolved transitive advisories** (fixed in the lockfile):
+
+- **`@phala/dcap-qvl-web` (GHSA-796p-j2gh-9m2q, CRITICAL — "Missing Verification
+  for QE Identity")** — resolved by an `overrides` entry forcing
+  `@magicblock-labs/ephemeral-rollups-sdk` to `^0.15.5`, which drops
+  `@phala/dcap-qvl-web@0.2.7` for the non-vulnerable `@phala/dcap-qvl@0.3.9`.
+  Validated: typecheck/build clean, 345 unit tests pass, and a devnet write-smoke
+  (deposit→open→close→withdraw) run on both this override and the prior 0.6.5
+  baseline failed identically on an unfunded test wallet — i.e. the 9-minor SDK
+  jump introduces no write-path regression. The swap's only new residual is a
+  LOW (`elliptic`, risky-crypto-primitive) transitively under the new dcap-qvl.
+- `uuid` (GHSA-w5hq-g745-h8pq) via a scoped `overrides` forcing `jayson`'s
+  `uuid@8` → `11.1.1` (jayson only calls `uuid.v4()`, stable across majors); and
+  `esbuild` (GHSA-g7r4-m6w7-qqqr, dev-only) via bumping `tsx` to 4.23 (esbuild
+  0.28.1).
 
 For ongoing audit notes see the project's internal hardening logs (not committed publicly).
