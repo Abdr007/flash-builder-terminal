@@ -31,7 +31,7 @@ import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { homedir } from 'os';
 import { resolve, dirname } from 'path';
 import chalk from 'chalk';
-import { c, DIAMOND } from './magic-theme.js';
+import { c, DIAMOND, BOLT } from './magic-theme.js';
 import { userEnvFilePath, validateRpcUrl } from '../config/index.js';
 
 interface WizardAnswers {
@@ -239,7 +239,9 @@ export async function runInitWizard(
 
   // ── Banner ─────────────────────────────────────────────────────────
   process.stdout.write('\n');
-  process.stdout.write(`  ${DIAMOND}  ${c.teal.bold('Flash Magic Terminal')}  ${c.muted('— first-run setup')}\n`);
+  process.stdout.write(`  ${DIAMOND}  ${c.teal.bold('Flash Magic Terminal')}  ${BOLT}  ${c.muted('first-run setup')}\n`);
+  process.stdout.write(`  ${c.faint('━'.repeat(56))}\n`);
+  process.stdout.write(`  ${c.muted("Welcome — one quick step and you're trading sub-second perps.")}\n`);
   process.stdout.write('\n');
 
   // ── Wallet auto-detect line ────────────────────────────────────────
@@ -327,7 +329,7 @@ export async function runInitWizard(
   // quiet here rather than telling the user to "run magic" from inside magic.
   if (!opts.rl) {
     process.stdout.write('\n');
-    process.stdout.write(`  ${c.teal.bold('Ready.')}  ${c.muted('Run')} ${c.teal.bold('magic')} ${c.muted('to start.')}\n`);
+    process.stdout.write(`  ${c.long('✔')}  ${c.teal.bold('All set.')}  ${c.muted('Run')} ${c.teal.bold('magic')} ${c.muted('to enter the terminal.')}\n`);
     process.stdout.write('\n');
   }
 
