@@ -36,13 +36,28 @@ export interface TradeLimitParams {
   market: string;
 }
 
+// Input tokens whose UI amount can be treated ~1:1 as USD collateral. Anything
+// else (SOL, ETH, …) is a token QUANTITY, not dollars, so its `inputAmountUi`
+// must NOT be fed to the USD-denominated risk caps.
+const USD_STABLE_INPUT_TOKENS: ReadonlySet<string> = new Set(['USDC', 'USDT', 'USD']);
+
 // Derive trade-limit params from the outbound body for builders that carry the
 // needed fields (openPosition has collateral + leverage in the request). Used
 // to enforce MAX_LEVERAGE / MAX_COLLATERAL_PER_TRADE / MAX_POSITION_SIZE at the
-// sign boundary. Returns null when the op isn't a size-bearing trade or a
-// caller-supplied override is expected instead.
+// sign boundary. Returns null when the op isn't a size-bearing trade, a
+// caller-supplied override is expected instead, OR the collateral is a non-USD
+// token whose USD value can't be derived from the body.
 function deriveTradeLimits(name: string, body: JsonObject): TradeLimitParams | null {
   if (name === 'openPosition') {
+    // `inputAmountUi` is denominated in the INPUT TOKEN. Treating a raw token
+    // quantity as USD would let `open SOL long 10 5x --collateral-token SOL`
+    // (10 SOL ≈ $1,500) sail under a $1,000 cap while being checked as "$10".
+    // Only a USD-stable input token can be valued from the body; for any other
+    // token we return null so the sign boundary FAILS CLOSED when caps are set
+    // (RISK_BEARING_BUILDERS handling below) rather than under-counting. A
+    // caller with an oracle price can still pass an explicit USD opts.tradeLimits.
+    const inputToken = String(body.inputTokenSymbol ?? '').toUpperCase();
+    if (!USD_STABLE_INPUT_TOKENS.has(inputToken)) return null;
     const collateral = Number(body.inputAmountUi);
     const leverage = Number(body.leverage);
     if (!Number.isFinite(collateral) || !Number.isFinite(leverage)) return null;

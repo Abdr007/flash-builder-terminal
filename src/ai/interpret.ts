@@ -62,10 +62,34 @@ function classify(line: string): { tier: Tier; confidence: number } {
     : { tier: 1, confidence: 0.8 };
 }
 
+/**
+ * Reject inputs shaped like key material (base58/hex private key, JSON byte
+ * array, BIP39 mnemonic) so a pasted secret is NEVER sent to the model or
+ * written to the corpus log. Runs on the normalized (lowercased) form — the
+ * same string that would be transmitted/logged. Lowercasing already mangles a
+ * base58 key, but suppressing the request entirely is the real fix.
+ */
+export function looksLikeSecret(normalized: string): boolean {
+  const s = normalized.trim();
+  // Single long base58/hex-ish token with no spaces → likely a private key
+  // (Phantom base58 ≈ 87-88 chars; hex 64/128). No legit command is one 40+
+  // char token.
+  if (!s.includes(' ') && /^[a-z0-9]{40,100}$/.test(s)) return true;
+  // JSON byte-array keypair: a long run of comma-separated small integers.
+  if (/(?:\d{1,3}\s*,\s*){15,}\d{1,3}/.test(s)) return true;
+  // BIP39-style mnemonic: 12+ space-separated lowercase alpha words.
+  const words = s.split(/\s+/);
+  if (words.length >= 12 && words.every((w) => /^[a-z]{3,8}$/.test(w))) return true;
+  return false;
+}
+
 /** Gate before spending a single credit: is this plausibly a trade instruction? */
 export function looksLikeIntent(normalized: string): boolean {
   const len = normalized.length;
   if (len < 2 || len > 120) return false;
+  // Never transmit or log secret-shaped input, even if it superficially passes
+  // the digit/intent-word test below (a base58 key always contains digits).
+  if (looksLikeSecret(normalized)) return false;
   if (normalized.split(' ').length > 24) return false;
   return /\d/.test(normalized) || INTENT_WORDS.test(normalized);
 }
