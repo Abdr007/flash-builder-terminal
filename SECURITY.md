@@ -35,7 +35,9 @@ You'll get an acknowledgement within **48 hours** and a status update within **7
 
 - Keypair secret bytes are zeroed on `wallet disconnect`, on `wallet use` (prior wallet), on graceful shutdown, and on `uncaughtException`
 - Keypair integrity verified before every signature
-- Signing guard with rate limits, per-trade caps, and audit log — covers `open`, `close`, `partial_close`, `increase`, `add_collateral`, `remove_collateral`, `reverse`, `place_limit`, `cancel_order`, `liquidate`
+- Signing guard with rate limits, per-trade caps, and audit log — covers `open`, `close`, `partial_close`, `increase`, `add_collateral`, `remove_collateral`, `reverse`, `place_limit`, `cancel_order`, `liquidate`. A submit-time marker is written the instant a signature exists, so a process killed during the on-chain confirm window can never leave a signed trade unlogged
+- Optional tamper-evident audit log (`SIGNING_AUDIT_TAMPER_EVIDENT=1`, off by default): each entry is chained with `seq` + `prevHash` + `hash = sha256(prevHash + entry)`, so any later edit, deletion, or reordering of the log breaks the chain and is pinpointed by `verifyAuditChain()`. The chain resumes across process restarts
+- Untrusted display strings (API/RPC error messages, on-chain token/market symbols) are stripped of terminal control/ANSI bytes at the render boundary, so a compromised endpoint cannot repaint or spoof the pre-sign confirm card
 - Wallet files: home-dir scoped, symlink-resolved, size-capped at 384 bytes, mode `0600` enforced (POSIX)
 - `.env` and `~/.magic/` are gitignored
 - RPC URL validation rejects non-HTTPS, embedded credentials, and `.local` mDNS hosts; loopback HTTP requires `MAGIC_ALLOW_INSECURE_RPC=1`

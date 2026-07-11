@@ -27,6 +27,7 @@
 
 import { createInterface, Interface } from 'readline';
 import { existsSync, mkdirSync, statSync } from 'fs';
+import { readJsonCapped } from '../utils/fetch-json.js';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { homedir } from 'os';
 import { resolve, dirname } from 'path';
@@ -97,7 +98,9 @@ async function probeRpc(url: string, timeoutMs = 5000): Promise<{ slot: number; 
       signal: ctrl.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const j = (await res.json()) as { result?: number; error?: { message: string } };
+    // Byte-cap: this probes a USER-SUPPLIED RPC URL — a hostile endpoint must
+    // not stream an unbounded body within the timeout and OOM the wizard.
+    const j = await readJsonCapped<{ result?: number; error?: { message: string } }>(res);
     if (j.error) throw new Error(j.error.message);
     if (typeof j.result !== 'number') throw new Error('no slot in response');
     return { slot: j.result, ms: Date.now() - t0 };

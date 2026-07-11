@@ -10,9 +10,10 @@
  * before signing, and `logAudit` after the result is known.
  */
 
-import { appendFileSync, mkdirSync, existsSync, writeFileSync, statSync, renameSync } from 'fs';
+import { appendFileSync, mkdirSync, existsSync, writeFileSync, statSync, renameSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { createHash } from 'crypto';
 import { getErrorMessage } from '../utils/retry.js';
 import { redactCommonSecrets } from './redact-secrets.js';
 
@@ -78,6 +79,68 @@ export interface SigningAuditEntry {
   reason?: string;
   txSignature?: string;
   latencyMs?: number;
+  // Tamper-evidence (present ONLY when SIGNING_AUDIT_TAMPER_EVIDENT=1). These
+  // form an append-only hash chain: `hash = sha256(prevHash + canonical(entry
+  // without hash))`, so deleting, editing, or reordering any line breaks the
+  // chain from that point on and `verifyAuditChain` reports the first bad line.
+  seq?: number;
+  prevHash?: string;
+  hash?: string;
+}
+
+/** Genesis anchor for the tamper-evident hash chain (fixed constant). */
+const AUDIT_CHAIN_GENESIS = 'flash-magic-audit-genesis-v1';
+
+/** Deterministic serialization: sorted keys so write-time and verify-time
+ *  hashing agree regardless of property insertion order. Entry values are flat
+ *  primitives (strings/numbers), so a shallow sort is sufficient. */
+function stableStringify(obj: Record<string, unknown>): string {
+  const sorted: Record<string, unknown> = {};
+  for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
+  return JSON.stringify(sorted);
+}
+
+function chainHash(prevHash: string, entryWithoutHash: Record<string, unknown>): string {
+  return createHash('sha256').update(prevHash + stableStringify(entryWithoutHash)).digest('hex');
+}
+
+/**
+ * Verify a tamper-evident signing-audit log. Reads the file, walks the hash
+ * chain from genesis, and returns the 1-based line number of the FIRST entry
+ * whose `seq`, `prevHash`, or recomputed `hash` doesn't match — i.e. where the
+ * log was edited, truncated, or reordered. `{ ok: true }` means intact.
+ *
+ * Assumes every line is a chained entry (the log was written with tamper-
+ * evidence on from the start). Best-effort: unreadable file → ok:false.
+ */
+export function verifyAuditChain(path: string): { ok: boolean; brokenAtLine?: number; reason?: string } {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (err) {
+    return { ok: false, reason: `cannot read log: ${getErrorMessage(err)}` };
+  }
+  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+  let prev = AUDIT_CHAIN_GENESIS;
+  let expectedSeq = 0;
+  for (let i = 0; i < lines.length; i++) {
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(lines[i]) as Record<string, unknown>;
+    } catch {
+      return { ok: false, brokenAtLine: i + 1, reason: 'not valid JSON' };
+    }
+    const { hash, ...rest } = entry;
+    if (typeof hash !== 'string' || typeof rest.prevHash !== 'string' || typeof rest.seq !== 'number') {
+      return { ok: false, brokenAtLine: i + 1, reason: 'missing chain fields (seq/prevHash/hash)' };
+    }
+    if (rest.seq !== expectedSeq) return { ok: false, brokenAtLine: i + 1, reason: `seq mismatch (want ${expectedSeq}, got ${rest.seq})` };
+    if (rest.prevHash !== prev) return { ok: false, brokenAtLine: i + 1, reason: 'prevHash does not chain to prior line' };
+    if (chainHash(prev, rest) !== hash) return { ok: false, brokenAtLine: i + 1, reason: 'hash mismatch (line was edited)' };
+    prev = hash;
+    expectedSeq++;
+  }
+  return { ok: true };
 }
 
 const MAX_AUDIT_LOG_BYTES = 10 * 1024 * 1024;
@@ -111,9 +174,39 @@ export class SigningGuard {
   private signingTimestamps: number[] = [];
   private lastSigningTime = 0;
 
+  // Tamper-evident hash chain (opt-in via SIGNING_AUDIT_TAMPER_EVIDENT=1).
+  private readonly tamperEvident: boolean =
+    process.env.SIGNING_AUDIT_TAMPER_EVIDENT === '1' || process.env.SIGNING_AUDIT_TAMPER_EVIDENT === 'true';
+  private lastAuditHash = AUDIT_CHAIN_GENESIS;
+  private auditSeq = 0;
+
   constructor(config?: Partial<SigningGuardConfig>) {
     this.config = { ...DEFAULT_SIGNING_GUARD_CONFIG, ...config };
     this.initAuditLog();
+    if (this.tamperEvident) this.resumeAuditChain();
+  }
+
+  /**
+   * Resume the hash chain across process restarts: read the CURRENT log's last
+   * chained line and continue from its hash + seq. Without this, every restart
+   * would reset to genesis and verifyAuditChain would flag a false break at the
+   * restart boundary. Best-effort — a missing/empty/unchained log starts fresh.
+   */
+  private resumeAuditChain(): void {
+    try {
+      if (!existsSync(this.config.auditLogPath)) return;
+      const raw = readFileSync(this.config.auditLogPath, 'utf8');
+      const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+      const last = lines[lines.length - 1];
+      if (!last) return;
+      const entry = JSON.parse(last) as { hash?: unknown; seq?: unknown };
+      if (typeof entry.hash === 'string' && typeof entry.seq === 'number') {
+        this.lastAuditHash = entry.hash;
+        this.auditSeq = entry.seq + 1;
+      }
+    } catch {
+      /* best-effort: fall back to genesis */
+    }
   }
 
   /**
@@ -276,7 +369,24 @@ export class SigningGuard {
     // tokens, and other secrets. Without this, every audit log entry from
     // a failed RPC call leaks the operator's api key to disk.
     const scrubbed = scrubAuditEntry(entry);
-    const line = JSON.stringify(scrubbed) + '\n';
+    // Tamper-evidence: compute the chain fields SYNCHRONOUSLY (in call order) so
+    // consecutive logAudit calls chain deterministically regardless of when their
+    // async writes fire. Never let this throw onto the money path — on any error
+    // fall back to the plain (unchained) entry. Default-off: zero change unless
+    // SIGNING_AUDIT_TAMPER_EVIDENT is set.
+    let record: Record<string, unknown> = scrubbed as unknown as Record<string, unknown>;
+    if (this.tamperEvident) {
+      try {
+        const base = { ...scrubbed, seq: this.auditSeq, prevHash: this.lastAuditHash } as unknown as Record<string, unknown>;
+        const hash = chainHash(this.lastAuditHash, base);
+        this.lastAuditHash = hash;
+        this.auditSeq += 1;
+        record = { ...base, hash };
+      } catch {
+        /* chain best-effort; write the plain entry rather than lose the record */
+      }
+    }
+    const line = JSON.stringify(record) + '\n';
     setImmediate(() => {
       try {
         if (existsSync(this.config.auditLogPath)) {
