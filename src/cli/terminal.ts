@@ -1645,7 +1645,7 @@ export class MagicTerminal {
     // optimistic UI (render on fire, confirm in background). `turbo` = also build
     // the ix client-side, skipping flashapi's build hop. `fast` = both.
     if (/^(instant|turbo|fast)(\s+(on|off|1|0|true|false))?$/.test(lower)) {
-      this.handleLatencyMode(lower);
+      await this.handleLatencyMode(lower);
       return;
     }
 
@@ -2312,15 +2312,30 @@ export class MagicTerminal {
    * process env the trade path reads (MAGIC_INSTANT / MAGIC_TURBO), so a trader
    * can flip optimistic / client-side-build execution without restarting.
    */
-  private handleLatencyMode(line: string): void {
+  private async handleLatencyMode(line: string): Promise<void> {
     const [cmd, arg] = line.trim().split(/\s+/);
     const on = arg === undefined || arg === 'on' || arg === '1' || arg === 'true';
-    const set = (k: string, v: boolean): void => { if (v) process.env[k] = '1'; else delete process.env[k]; };
+    // Persist to ~/.magic/.env (loaded into process.env on next startup) so the
+    // preference sticks — AND mutate the live process.env so it takes effect now.
+    const { syncEnvLine, userEnvFilePath } = await import('../config/index.js');
+    const { existsSync, appendFileSync } = await import('node:fs');
+    const set = (k: string, v: boolean): void => {
+      const val = v ? '1' : '0';
+      process.env[k] = val; // '0' is not '1', so the trade path reads it as off
+      try {
+        // syncEnvLine updates an existing line; if the key isn't in .env yet it
+        // returns false, so append it.
+        if (!syncEnvLine(k, val)) {
+          const p = userEnvFilePath();
+          if (existsSync(p)) appendFileSync(p, `${k}=${val}\n`, { mode: 0o600 });
+        }
+      } catch { /* persist best-effort */ }
+    };
     if (cmd === 'instant') set('MAGIC_INSTANT', on);
     else if (cmd === 'turbo') set('MAGIC_TURBO', on);
     else if (cmd === 'fast') { set('MAGIC_INSTANT', on); set('MAGIC_TURBO', on); }
     const badge = (k: string): string => (process.env[k] === '1' ? c.long('● on') : c.muted('○ off'));
-    process.stdout.write(`\n  ${c.teal.bold('LATENCY MODE')}    instant ${badge('MAGIC_INSTANT')}   ·   turbo ${badge('MAGIC_TURBO')}\n`);
+    process.stdout.write(`\n  ${c.teal.bold('LATENCY MODE')}    instant ${badge('MAGIC_INSTANT')}   ·   turbo ${badge('MAGIC_TURBO')}   ${c.faint('(saved — persists across restarts)')}\n`);
     const anyOn = process.env.MAGIC_INSTANT === '1' || process.env.MAGIC_TURBO === '1';
     process.stdout.write(anyOn
       ? `  ${c.muted('trades render on fire + confirm in the background (optimistic) — a revert warns after.')}\n\n`
