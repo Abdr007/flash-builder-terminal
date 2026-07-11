@@ -33,7 +33,7 @@ import { MagicTerminal } from './cli/terminal.js';
 import { c, DIAMOND, BRAND_NAME_UPPER } from './cli/magic-theme.js';
 import { initLogger, getLogger, LogLevel } from './utils/logger.js';
 import { setupWallet } from './cli/wallet-flows.js';
-import { renderHero } from './cli/banner.js';
+import { animateHero } from './cli/banner.js';
 import { COMMAND_ALIASES } from './cli/interpreter.js';
 
 function printHelp(): void {
@@ -283,7 +283,7 @@ async function main(): Promise<void> {
   const ask = (q: string): Promise<string> =>
     new Promise<string>((resolveAsk) => rl.question(q, (a) => resolveAsk(a)));
 
-  process.stdout.write(await renderHero());
+  await animateHero();
 
   let walletInfo: { address: string; name: string } | null = null;
   try {
