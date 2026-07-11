@@ -4348,9 +4348,10 @@ export const magicFlpDeposit: ToolDefinition = {
     const result = await signV2(context, 'addCompoundingLiquidity', {
       owner, inputTokenSymbol: token, amount: uiAmount(amount),
     });
-    return tokenCard('Liquidity Added', 'open', `${token} → FLP · auto-compounding yield`, [
+    return tokenCard('Liquidity Added', 'open', `${token} → FLP.1 (Crypto) · auto-compounding yield`, [
       { label: 'Deposit', value: c.primary.bold(`${amount} ${token}`) },
-      { label: 'Receive', value: c.muted('FLP (auto-compounding LP)') },
+      { label: 'Pool', value: c.primary('FLP.1 · Crypto') },
+      { label: 'Receive', value: c.muted('FLP.1 (auto-compounding LP)') },
     ], result, context);
   },
 };
@@ -4388,29 +4389,44 @@ export const magicFlpClaim: ToolDefinition = {
 
 export const magicFlp: ToolDefinition = {
   name: 'magicFlp',
-  description: 'Flash Liquidity Pools overview — pools + your FLP token balances.',
+  description: 'Flash Liquidity Pools overview — every pool with TVL, FLP price, and capacity.',
   parameters: z.object({}),
   async execute(_params, context): Promise<ToolResult> {
     const client = buildFlashV2Client(context);
     const poolData = await client.poolData().catch(() => null);
+    // pool-data returns { pools: [{ poolName, lpStats: { lpPrice, totalPoolValueUsd,
+    // maxAumUsd, stableCoinPercentage, lpTokenSupply }, ... }] } — verified live.
+    const pools = (poolData && typeof poolData === 'object' && Array.isArray((poolData as Record<string, unknown>).pools))
+      ? ((poolData as Record<string, unknown>).pools as Record<string, unknown>[])
+      : [];
     const rows: Array<{ label: string; value: string }> = [];
-    for (const pool of isPoolData(poolData)) {
-      const name = fieldString(pool, 'name') || fieldString(pool, 'poolName');
+    for (const pool of pools) {
+      const name = fieldString(pool, 'poolName');
       if (!name) continue;
-      const aum = fieldNumber(pool, 'aumUsd') || fieldNumber(pool, 'equityUsd');
-      rows.push({ label: name, value: aum > 0 ? c.primary(`TVL ${formatUsd(aum)}`) : c.muted('—') });
+      const lp = (pool.lpStats && typeof pool.lpStats === 'object') ? pool.lpStats as Record<string, unknown> : {};
+      const tvl = fieldNumber(lp, 'totalPoolValueUsd');
+      const price = fieldNumber(lp, 'lpPrice');
+      const maxAum = fieldNumber(lp, 'maxAumUsd');
+      const fillPct = maxAum > 0 ? Math.min(100, (tvl / maxAum) * 100) : 0;
+      const priceStr = price > 0 ? `FLP ${formatPrice(price)}` : '';
+      const capStr = fillPct > 0 ? c.faint(`${fillPct.toFixed(0)}% full`) : '';
+      rows.push({
+        label: c.primary.bold(name),
+        value: `${tvl > 0 ? c.primary(`TVL ${formatUsd(tvl)}`) : c.muted('—')}   ${c.muted(priceStr)}   ${capStr}`.trimEnd(),
+      });
     }
     if (rows.length === 0) rows.push({ label: '', value: c.muted('pool data unavailable — try again') });
-    rows.push({ label: '', value: c.faint('deposit: flp deposit <token> <amt>  ·  withdraw: flp withdraw <token> <amt>  ·  claim: flp claim') });
+    rows.push({ label: '', value: c.faint('flp deposit <token> <amt>  ·  flp withdraw <token> <amt>  ·  flp claim') });
     return {
       success: true,
       message: renderCard({
         status: 'Flash Liquidity Pools',
         tone: 'info',
-        subtitle: `${DIAMOND}  ${c.muted('provide liquidity, earn yield')}`,
+        subtitle: `${DIAMOND}  ${c.muted(`${rows.length - 1} pools · provide liquidity, earn yield`)}`,
         columns: 1,
         rows,
       }),
+      data: { poolCount: rows.length - 1 },
     };
   },
 };
