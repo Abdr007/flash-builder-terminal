@@ -26,7 +26,8 @@
  */
 
 import { createInterface, Interface } from 'readline';
-import { existsSync, mkdirSync, writeFileSync, statSync } from 'fs';
+import { existsSync, mkdirSync, statSync } from 'fs';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { homedir } from 'os';
 import { resolve, dirname } from 'path';
 import chalk from 'chalk';
@@ -167,8 +168,14 @@ async function tryReadPubkey(walletPath: string): Promise<string | null> {
     const raw = readFileSync(walletPath, 'utf-8');
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr) || arr.length !== 64) return null;
-    const kp = Keypair.fromSecretKey(Uint8Array.from(arr));
-    return kp.publicKey.toBase58();
+    // Scrub the retained secret buffer after deriving the address — we only
+    // want the pubkey here, not to leave 64 key bytes lingering in the heap.
+    const keyBytes = Uint8Array.from(arr);
+    if (Array.isArray(arr)) arr.fill(0);
+    const kp = Keypair.fromSecretKey(keyBytes);
+    const pubkey = kp.publicKey.toBase58();
+    try { keyBytes.fill(0); } catch { /* best-effort */ }
+    return pubkey;
   } catch {
     return null;
   }
@@ -310,7 +317,7 @@ export async function runInitWizard(
   // ── Write the env file ─────────────────────────────────────────────
   const answers: WizardAnswers = { network, l1RpcUrl: l1RpcUrl!, walletPath };
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(envPath, renderEnv(answers), { mode: 0o600 });
+  atomicWriteFileSync(envPath, renderEnv(answers), 0o600);
   process.stdout.write(`  ${c.long('✔')}  ${c.muted('Wrote')} ${c.cyan(envPath)}\n`);
 
   // ── Next step. ─────────────────────────────────────────────────────

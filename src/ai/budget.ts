@@ -10,9 +10,10 @@
  * show a real dollar estimate rather than a black box.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 import { homedir } from 'os';
-import { resolve, dirname } from 'path';
+import { resolve } from 'path';
 import { MODEL_PRICES } from './config.js';
 
 interface DayState {
@@ -74,9 +75,7 @@ export class BudgetLedger {
 
   private persist(): void {
     try {
-      const dir = dirname(this.filePath);
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-      writeFileSync(this.filePath, JSON.stringify(this.day), { mode: 0o600 });
+      atomicWriteFileSync(this.filePath, JSON.stringify(this.day), 0o600);
     } catch {
       /* best-effort — never let telemetry I/O break trading */
     }

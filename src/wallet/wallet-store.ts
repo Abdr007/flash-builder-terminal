@@ -1,6 +1,5 @@
 import {
   mkdirSync,
-  writeFileSync,
   readFileSync,
   existsSync,
   chmodSync,
@@ -13,6 +12,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { Keypair } from '@solana/web3.js';
 import { safeJsonParse } from '../utils/safe-json.js';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 const FLASH_DIR = join(homedir(), '.flash');
 const REGISTRY_FILE = join(FLASH_DIR, 'wallets.json');
@@ -78,7 +78,10 @@ function loadRegistry(): WalletRegistry {
 
 function saveRegistry(registry: WalletRegistry): void {
   ensureDir();
-  writeFileSync(REGISTRY_FILE, JSON.stringify(registry, null, 2) + '\n', { mode: 0o600 });
+  // Atomic (temp+rename) so a crash mid-write can't truncate the wallet
+  // registry into an unparseable state that loadRegistry() would silently
+  // read back as an empty wallet list.
+  atomicWriteFileSync(REGISTRY_FILE, JSON.stringify(registry, null, 2) + '\n', 0o600);
 }
 
 /** Sanitize wallet name: alphanumeric, hyphens, underscores only. */
@@ -191,9 +194,13 @@ export class WalletStore {
     const keypair = Keypair.fromSecretKey(keyBytes);
     const address = keypair.publicKey.toBase58();
 
-    // Zero the keypair's secret key — we only needed the address
+    // Zero the RETAINED secret buffer. `Keypair.fromSecretKey` holds `keyBytes`
+    // by reference, so scrubbing `keyBytes` scrubs the live key. (The
+    // `keypair.secretKey` getter returns a fresh COPY each call, so filling that
+    // is a no-op on the real key — see walletManager.ts:26-30.) We only ever
+    // needed the address; wipe the key material the moment we have it.
     try {
-      keypair.secretKey.fill(0);
+      keyBytes.fill(0);
     } catch {
       /* best-effort */
     }
@@ -355,8 +362,9 @@ export class WalletStore {
 
           const keypair = Keypair.fromSecretKey(keyBytes);
           const address = keypair.publicKey.toBase58();
+          // Scrub the RETAINED buffer (keyBytes), not the getter's copy.
           try {
-            keypair.secretKey.fill(0);
+            keyBytes.fill(0);
           } catch {
             /* best-effort */
           }

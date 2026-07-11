@@ -8,9 +8,24 @@
 import { config as loadDotenv } from 'dotenv';
 import { homedir } from 'os';
 import { resolve, isAbsolute } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, statSync } from 'fs';
+import { existsSync, readFileSync, statSync, renameSync } from 'fs';
 import type { MagicConfig } from '../types/index.js';
 import { safeEnvBool, safeEnvBoolStrict, safeEnvNumber, safeEnvString } from '../utils/safe-env.js';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
+
+// Warn (once) when config.json exists but can't be read — it silently reverts
+// every config.json-sourced override to its default, which the user must know.
+let _corruptConfigWarned = false;
+function warnCorruptConfigOnce(reason: string): void {
+  if (_corruptConfigWarned) return;
+  _corruptConfigWarned = true;
+  try {
+    process.stderr.write(
+      `⚠ ~/.magic/config.json is unreadable (${reason}) — its settings are being ignored. ` +
+      `Fix or delete the file. Env / .env settings are unaffected.\n`,
+    );
+  } catch { /* best-effort */ }
+}
 
 // ─── Config file (~/.magic/config.json) ──────────────────────────────────────
 // Precedence: env vars > config.json > defaults.
@@ -50,11 +65,17 @@ function loadConfigFile(): ConfigFileData {
     // exhaust memory in JSON.parse.
     const st = statSync(CONFIG_PATH);
     if (!st.isFile()) return {};
-    if (st.size > CONFIG_MAX_BYTES) return {};
+    if (st.size > CONFIG_MAX_BYTES) { warnCorruptConfigOnce(`file exceeds ${CONFIG_MAX_BYTES} bytes`); return {}; }
     const parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as unknown;
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      warnCorruptConfigOnce('not a JSON object');
+      return {};
+    }
     return parsed as ConfigFileData;
-  } catch {
+  } catch (err) {
+    // The file exists (checked above) but couldn't be parsed — surface it
+    // loudly instead of silently reverting config.json overrides to defaults.
+    warnCorruptConfigOnce(err instanceof Error ? err.message : 'parse error');
     return {};
   }
 }
@@ -62,30 +83,45 @@ function loadConfigFile(): ConfigFileData {
 /** Persist a single field to ~/.magic/config.json (merge with existing). */
 export function saveConfigField(key: keyof ConfigFileData | string, value: unknown): void {
   let data: Record<string, unknown> = {};
+  const fileExists = existsSync(CONFIG_PATH);
+  let existingUnreadable = false;
   try {
-    if (existsSync(CONFIG_PATH)) {
+    if (fileExists) {
       const st = statSync(CONFIG_PATH);
       if (st.isFile() && st.size <= CONFIG_MAX_BYTES) {
         const parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as unknown;
         if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
           data = parsed as Record<string, unknown>;
+        } else {
+          existingUnreadable = true;
         }
+      } else {
+        existingUnreadable = true;
       }
     }
   } catch {
-    /* fresh file */
+    existingUnreadable = true;
+  }
+  // A read-modify-write that silently started from {} on an unreadable file
+  // would PERMANENTLY drop every other persisted field (backup RPCs, etc.).
+  // Preserve the bad file as a .corrupt backup and warn, rather than clobber it.
+  if (existingUnreadable) {
+    try {
+      renameSync(CONFIG_PATH, CONFIG_PATH + '.corrupt');
+      process.stderr.write(
+        `⚠ ~/.magic/config.json was unreadable; backed it up to config.json.corrupt before writing "${String(key)}". ` +
+        `Other previously-saved fields may need to be re-set.\n`,
+      );
+    } catch { /* best-effort — proceed with the write regardless */ }
   }
   if (value === undefined) delete data[key];
   else data[key] = value;
   // mode 0700 on the dir + 0600 on the file — config.json routinely stores
   // RPC URLs that contain api keys (Helius / Triton / QuickNode). Default
   // umask 022 would write 0644 (world-readable). Explicit modes prevent
-  // a credential leak on shared hosts.
-  mkdirSync(resolve(homedir(), '.magic'), { recursive: true, mode: 0o700 });
-  writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
-  // Retroactively chmod in case the file was created by a prior version
-  // without an explicit mode. Best-effort; never blocks the write.
-  try { chmodSync(CONFIG_PATH, 0o600); } catch { /* best-effort */ }
+  // a credential leak on shared hosts. Atomic (temp+rename) so a crash
+  // mid-write can't truncate the file into the unreadable state above.
+  atomicWriteFileSync(CONFIG_PATH, JSON.stringify(data, null, 2) + '\n', 0o600);
 }
 
 /**
@@ -192,7 +228,7 @@ export function syncEnvLine(key: string, value: string): boolean {
   }
   if (changed) {
     try {
-      writeFileSync(path, lines.join('\n'), { mode: 0o600 });
+      atomicWriteFileSync(path, lines.join('\n'), 0o600);
       // Also update process.env so any in-process re-read sees the new
       // value WITHOUT needing a restart. Without this, the SDK-level
       // loadConfig() called from another module path on a fresh

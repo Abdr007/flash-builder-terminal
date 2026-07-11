@@ -453,7 +453,10 @@ function flexParseOpen(input: string): ParsedCommand | null {
   }
 
   if (!collateral || !Number.isFinite(collateral) || collateral <= 0) return null;
-  if (!leverage) leverage = 2; // default 2x
+  // Default 2x ONLY when no leverage was specified. An explicitly-typed invalid
+  // leverage (e.g. `0x`) must be REJECTED, not silently rewritten to 2x — a
+  // trade differing from what the user typed is a trust/correctness hazard.
+  if (leverage === null) leverage = 2;
   if (!Number.isFinite(leverage) || leverage < 1) return null;
 
   return {
