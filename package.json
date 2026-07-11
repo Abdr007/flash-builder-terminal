@@ -109,14 +109,14 @@
     "@types/bn.js": "^5.2.0",
     "@types/figlet": "^1.7.0",
     "@types/node": "^22.20.1",
-    "@typescript-eslint/eslint-plugin": "^8.43.0",
-    "@typescript-eslint/parser": "^8.43.0",
+    "@typescript-eslint/eslint-plugin": "^8.63.0",
+    "@typescript-eslint/parser": "^8.63.0",
     "eslint": "^9.0.0",
     "fast-check": "^4.7.0",
-    "prettier": "^3.4.2",
+    "prettier": "^3.9.5",
     "tsx": "^4.23.0",
     "typescript": "^5.7.3",
-    "typescript-eslint": "^8.59.2",
+    "typescript-eslint": "^8.63.0",
     "vitest": "^3.2.7"
   }
 }
