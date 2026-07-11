@@ -1649,6 +1649,12 @@ export class MagicTerminal {
       return;
     }
 
+    // `cost` / `fees` — show the per-trade transaction cost + how to tune it.
+    if (lower === 'cost' || lower === 'fees' || lower.startsWith('fee ')) {
+      this.handleCost(lower);
+      return;
+    }
+
     // `rpc ...` subcommands — manage L1 RPC endpoints (set/add/remove/test/list).
     // Changes persist to ~/.magic/config.json so they survive restarts.
     if (lower === 'rpc' || lower.startsWith('rpc ')) {
@@ -2305,6 +2311,49 @@ export class MagicTerminal {
       }
       return 1;
     }
+  }
+
+  /**
+   * `cost` / `fee <µLamports>` — show/tune the per-trade transaction cost.
+   * On the single-sequencer ER a priority fee is wasted, so the default is 0 —
+   * a trade costs just the fixed 5000-lamport base fee.
+   */
+  private handleCost(line: string): void {
+    const [cmd, arg] = line.trim().split(/\s+/);
+    if (cmd === 'fee' && arg !== undefined) {
+      const n = Number(arg);
+      if (Number.isFinite(n) && n >= 0) {
+        process.env.MAGIC_ER_PRIORITY_FEE = String(Math.floor(n));
+        this.config.erPriorityFee = Math.floor(n);
+        try {
+          // Persist (append if absent).
+          void import('../config/index.js').then(({ syncEnvLine, userEnvFilePath }) => import('node:fs').then(({ existsSync, appendFileSync }) => {
+            if (!syncEnvLine('MAGIC_ER_PRIORITY_FEE', String(Math.floor(n)))) {
+              const p = userEnvFilePath();
+              if (existsSync(p)) appendFileSync(p, `MAGIC_ER_PRIORITY_FEE=${Math.floor(n)}\n`, { mode: 0o600 });
+            }
+          }));
+        } catch { /* best-effort */ }
+      }
+    }
+    const erFee = this.config.erPriorityFee;
+    // ER opens use ~120k CU in practice; base fee is a fixed 5000 lamports/sig.
+    const CU = 120_000, BASE = 5000;
+    const prio = Math.round((erFee * CU) / 1_000_000); // µLamports/CU × CU / 1e6 = lamports
+    const total = BASE + prio;
+    const usd = (lamports: number): string => `~$${((lamports / 1e9) * 200).toFixed(5)}`; // ≈$200/SOL
+    process.stdout.write([
+      '',
+      `  ${c.teal.bold('TRANSACTION COST')}   ${c.muted('per ER trade (turbo path)')}`,
+      `  ${c.muted('Base fee')}        ${c.primary(`${BASE} lamports`)}  ${c.faint('(fixed, 1 sig)')}`,
+      `  ${c.muted('ER priority')}     ${erFee === 0 ? c.long('0') : c.primary(String(erFee))} ${c.muted('µLamports/CU')}  ${c.faint(`→ ${prio} lamports @ ~${CU / 1000}k CU`)}`,
+      `  ${c.muted('Total')}           ${c.long.bold(`${total} lamports`)}  ${c.faint(usd(total))}`,
+      '',
+      `  ${c.faint(erFee === 0
+        ? 'cheapest possible — the single-sequencer ER needs no priority fee. Tune: fee <µLamports/CU>'
+        : 'tune with: fee 0   (0 = cheapest; the ER has no fee auction)')}`,
+      '',
+    ].join('\n'));
   }
 
   /**

@@ -162,7 +162,10 @@ export function buildMagicClient(context: ToolContext): MagicTradeClient {
     poolName,
     erEndpoint,
     programIdOverride: context.config.programIdOverride,
-    prioritizationFee: context.config.computeUnitPrice,
+    // ER trades pay NO priority fee by default (single sequencer, no auction) —
+    // the cheapest possible tx (just the fixed base fee). Was 50k µLamports/CU
+    // (~10k lamports/trade wasted). Bump via MAGIC_ER_PRIORITY_FEE if needed.
+    prioritizationFee: context.config.erPriorityFee,
     fastConfirm: context.config.fastConfirm,
   });
   _magicClientCache.set(cacheKey, client);
