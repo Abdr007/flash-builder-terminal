@@ -14,6 +14,9 @@
  * shows real data instead of an em-dash.
  */
 
+import { readJsonCapped } from '../utils/fetch-json.js';
+import { validateRpcUrl } from '../config/index.js';
+
 const DEFAULT_URL = 'https://flashapi.trade';
 // The monitor ticks at 1 Hz; a 1.5 s cache means at most one Flash round-trip
 // per couple of ticks while still tracking the market in near real time.
@@ -58,7 +61,10 @@ export class FlashPriceService {
 
   constructor(baseUrl?: string) {
     // Match config resolution: explicit arg → env → default.
-    this.baseUrl = (baseUrl ?? process.env.MAGIC_FLASH_API_URL ?? DEFAULT_URL).replace(/\/+$/, '');
+    // Validate (https-only, no creds, no private/IMDS hosts) even though boot
+    // config also validates MAGIC_FLASH_API_URL — a programmatic SDK caller can
+    // construct this directly, so the protection must be intrinsic, not incidental.
+    this.baseUrl = validateRpcUrl(baseUrl ?? process.env.MAGIC_FLASH_API_URL ?? DEFAULT_URL, 'MAGIC_FLASH_API_URL').replace(/\/+$/, '');
   }
 
   /** Milliseconds since the last SUCCESSFUL fetch — Infinity if never fetched. */
@@ -91,7 +97,7 @@ export class FlashPriceService {
           signal: AbortSignal.timeout(3_000),
         });
         if (!res.ok) { this.noteFailure(); return this.cache; }
-        const payload = (await res.json()) as Record<string, FlashPriceRaw>;
+        const payload = (await readJsonCapped(res)) as Record<string, FlashPriceRaw>;
         const next = new Map<string, FlashPrice>();
         for (const [sym, v] of Object.entries(payload)) {
           if (!v || typeof v !== 'object') continue;
