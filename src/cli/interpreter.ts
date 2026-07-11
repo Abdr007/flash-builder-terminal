@@ -159,6 +159,29 @@ function normalizeNumberWords(text: string): string {
   return out.join(' ');
 }
 
+// ─── Magnitude shorthand (k / m / b) ─────────────────────────────────────────
+/**
+ * Expand trader shorthand on STANDALONE numbers: `5k`→5000, `60k`→60000,
+ * `1.5m`→1500000, `2b`→2000000000 — the way traders type collateral and prices
+ * ("long SOL $5k 10x", "tp 100k", "close BTC at 60k").
+ *
+ * SAFETY: matched only with a word boundary on BOTH sides, so it never touches
+ * leverage (`5x` — `x` isn't k/m/b), a market symbol, or a number glued to
+ * letters (`sol10k` has no boundary before the digit). `x` is deliberately
+ * excluded — `5x` is 5× leverage, not 5000.
+ */
+function normalizeMagnitudes(text: string): string {
+  return text.replace(/\b(\d+(?:\.\d+)?)\s*([kmb])\b/gi, (_m, num: string, suf: string) => {
+    const s = suf.toLowerCase();
+    const mult = s === 'k' ? 1_000 : s === 'm' ? 1_000_000 : 1_000_000_000;
+    const v = parseFloat(num) * mult;
+    if (!Number.isFinite(v)) return _m; // never emit NaN/Infinity into the parse stream
+    // Whole values as integers; keep a fixed-point decimal otherwise (avoids
+    // exponential notation like 1e21 that the downstream number regexes miss).
+    return Number.isInteger(v) ? String(v) : v.toFixed(8).replace(/\.?0+$/, '');
+  });
+}
+
 // ─── Command aliases (single-letter shortcuts at the start of input) ─────────
 
 export const COMMAND_ALIASES: Record<string, string> = {
@@ -390,8 +413,10 @@ function flexParseOpen(input: string): ParsedCommand | null {
     if (body === before) break;
   }
   body = body.replace(/@\$?(\d)/g, '$$$1');
-  body = body.replace(/\b(?:with|for|on|at|to|in|of|using|and|the|a|an|my|position|collateral|dollars?|bucks?|usd|usdc)\b/g, ' ');
+  body = body.replace(/\b(?:with|for|on|at|to|in|of|using|and|the|a|an|my|position|collateral|worth|dollars?|bucks?|usd|usdc)\b/g, ' ');
+  // Leverage phrasings → canonical `Nx`: "leverage 5", "5 leverage", "5 times".
   body = body.replace(/\bleverage\s+(\d+(?:\.\d+)?)\b/g, '$1x');
+  body = body.replace(/\b(\d+(?:\.\d+)?)\s*(?:times|leverage)\b/gi, '$1x');
   body = body.replace(/\s+/g, ' ').trim();
 
   // Side
@@ -486,7 +511,7 @@ export function interpretCommand(rawInput: string, _config?: MagicConfig): Parse
   const aliased = expandCommandAlias(sanitised);
   // tolerate `magic <verb>` prefix
   const stripped = aliased.replace(/^magic\s+/i, '');
-  const normalized = normalizeAssetText(normalizeNumberWords(stripped));
+  const normalized = normalizeAssetText(normalizeMagnitudes(normalizeNumberWords(stripped)));
   const lower = normalized.toLowerCase();
 
   // ─── Limit order (must run BEFORE open since both can start with side) ───
