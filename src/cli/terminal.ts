@@ -242,6 +242,7 @@ export function completeReplLine(line: string, marketSymbols: Set<string>): [str
       ...Object.keys(VERB_ALIASES),
       ...MARKET_COMPLETION_VERBS, // long/short/open/close/… — the primary trading verbs
       'deposit', 'withdraw', 'setup', 'portfolio', 'status', 'close-all',
+      'stake', 'unstake', 'claim', 'referral',
       'help', 'exit', 'quit', 'clear', 'wallet', 'rpc', 'monitor', 'watch',
       'kill', 'resume', 'init', 'env', 'feedback', 'ai',
     ]);
@@ -380,6 +381,10 @@ const SIGNING_VERBS = new Set<string>([
   'deposit',
   'deposit-direct',
   'withdraw',
+  'stake',
+  'unstake',
+  'claim',
+  'referral',
   'request-withdrawal',
   'withdrawal-settle',
   'settle',
@@ -864,6 +869,17 @@ const HELP_GROUPS: HelpGroup[] = [
     ],
   },
   {
+    title: 'Token / FAF Staking',
+    entries: [
+      { cmd: 'stake 100',                      hint: 'Stake 100 FAF — revenue share + fee discounts + referral tiers' },
+      { cmd: 'unstake 50',                     hint: 'Request to unstake 50 FAF (90-day linear cooldown)' },
+      { cmd: 'claim revenue',                  hint: 'Claim your staking revenue share (paid in USDC)' },
+      { cmd: 'claim rewards',                  hint: 'Claim accrued FAF staking rewards' },
+      { cmd: 'claim rebate',                   hint: 'Claim referral rebate (USDC)' },
+      { cmd: 'referral',                       hint: 'Set your referrer (defaults to the house wallet)' },
+    ],
+  },
+  {
     title: 'Portfolio & Markets',
     entries: [
       { cmd: 'portfolio',                      hint: 'On-chain positions (entry, mark, PnL, liq)' },
@@ -1322,6 +1338,10 @@ export class MagicTerminal {
       'close-all':         'Close All Positions',
       'deposit':           'Deposit to Vault',
       'withdraw':          'Withdraw from Vault',
+      'stake':             'Stake FAF',
+      'unstake':           'Unstake FAF',
+      'claim':             'Claim',
+      'referral':          'Set Referral',
       'settle':            'Settle Custody',
       'setup':             'On-Chain Setup',
       'builder':           'V2 Builder',
@@ -1473,6 +1493,19 @@ export class MagicTerminal {
       if (parsed.alias === 'withdraw') {
         rows.push({ label: '', value: c.muted('2-step L1 request + L1 settle · ~1–2 s') });
       }
+    } else if (parsed.alias === 'stake' || parsed.alias === 'unstake') {
+      const amt = Number(parsed.params.amount ?? 0);
+      subtitle = `${DIAMOND}  ${c.muted(parsed.alias === 'stake' ? 'FAF → staked · revenue share' : 'unstake request · 90-day cooldown')}`;
+      rows.push({ label: parsed.alias === 'stake' ? 'Stake' : 'Unstake', value: c.primary.bold(`${amt} FAF`) });
+    } else if (parsed.alias === 'claim') {
+      const kind = String(parsed.params.kind ?? 'revenue');
+      const label = kind === 'rewards' || kind === 'reward' ? 'FAF rewards' : kind.startsWith('rebate') ? 'Referral rebate (USDC)' : 'Revenue share (USDC)';
+      subtitle = `${DIAMOND}  ${c.muted('claim')}`;
+      rows.push({ label: 'Claim', value: c.primary(label) });
+    } else if (parsed.alias === 'referral') {
+      const ref = String(parsed.params.referrer ?? 'Dvvzg9rwaNfUqBSscoMZJa5CHFv8Lm94ngZrRyLGLfmK');
+      subtitle = `${DIAMOND}  ${c.muted('create referral relationship')}`;
+      rows.push({ label: 'Referrer', value: c.primary(`${ref.slice(0, 6)}…${ref.slice(-4)}${parsed.params.referrer ? '' : ' (default)'}`) });
     } else {
       // Generic fallback — render whichever params are set.
       const market = String(parsed.params.market ?? '').toUpperCase();

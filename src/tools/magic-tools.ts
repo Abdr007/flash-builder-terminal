@@ -44,6 +44,14 @@ import { getFlashMarketService } from '../data/flash-markets.js';
 const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const USDC_MINT_DEVNET = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
 
+// Default referrer for `create-referral` — every referral relationship this CLI
+// creates attributes to this wallet unless overridden via MAGIC_REFERRER.
+const DEFAULT_REFERRER = 'Dvvzg9rwaNfUqBSscoMZJa5CHFv8Lm94ngZrRyLGLfmK';
+function referrerAddress(): string {
+  const env = (process.env.MAGIC_REFERRER ?? '').trim();
+  return env.length >= 32 ? env : DEFAULT_REFERRER;
+}
+
 /**
  * Pick the explorer base host. Default: Solana Explorer.
  * Override via FLASH_EXPLORER=solscan (or =explorer to be explicit).
@@ -4228,7 +4236,109 @@ export function journalMagicTrade(
   });
 }
 
+// ─── Token / FAF staking + revenue + referral ──────────────────────────────
+// All funds-route builders (verified param contract). Cards are honest about the
+// pending → confirmed state like every other mutation.
+function tokenCard(status: string, tone: 'open' | 'close', subtitle: string, rows: Array<{ label: string; value: string }>, result: FlashV2BuilderResult, context: ToolContext): ToolResult {
+  if ('previewOnly' in result) return { success: true, message: c.muted(`  ${status.toLowerCase()} preview only — no transaction returned`), data: { response: result.response } };
+  return {
+    success: true,
+    message: renderCard({
+      status: confirmStatus(result, status, `${status.split(' ')[0]} Submitted`),
+      tone,
+      subtitle: `${DIAMOND}  ${c.muted(subtitle)}`,
+      columns: 1,
+      rows: [...rows, ...builderTxRows(result, context.config.network), ...pendingRows(result)],
+      url: solscanTx(result.signature, context.config.network),
+    }),
+    txSignature: result.signature,
+  };
+}
+
+export const magicStake: ToolDefinition = {
+  name: 'magicStake',
+  description: 'Stake FAF to unlock revenue share + fee discounts + referral tiers. args: amount (FAF).',
+  parameters: z.object({ amount: z.number().positive() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const amount = params.amount as number;
+    const doStake = (): Promise<FlashV2BuilderResult> => signV2(context, 'stakeToken', { owner, amount: uiAmount(amount) });
+    let result: FlashV2BuilderResult;
+    try {
+      result = await doStake();
+    } catch (err) {
+      // First-ever stake needs the token-stake account initialized once.
+      if (/not initialized|AccountNotInitialized|3012/i.test(getErrorMessage(err))) {
+        await signV2(context, 'initTokenStake', { owner });
+        result = await doStake();
+      } else throw err;
+    }
+    return tokenCard('FAF Staked', 'open', 'FAF → staked · up to 50% daily revenue share', [
+      { label: 'Staked', value: c.primary.bold(`${amount} FAF`) },
+    ], result, context);
+  },
+};
+
+export const magicUnstake: ToolDefinition = {
+  name: 'magicUnstake',
+  description: 'Request to unstake FAF (90-day linear cooldown). args: amount (FAF).',
+  parameters: z.object({ amount: z.number().positive() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const amount = params.amount as number;
+    const result = await signV2(context, 'unstakeTokenRequest', { owner, amount: uiAmount(amount) });
+    return tokenCard('Unstake Requested', 'close', '90-day linear cooldown · revenue share continues on remaining stake', [
+      { label: 'Unstaking', value: c.primary.bold(`${amount} FAF`) },
+    ], result, context);
+  },
+};
+
+export const magicClaim: ToolDefinition = {
+  name: 'magicClaim',
+  description: 'Claim staking revenue (USDC), FAF rewards, or referral rebate. args: kind (revenue|rewards|rebate).',
+  parameters: z.object({ kind: z.string().optional() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const usdc = stableMintFor(context.config.network);
+    const kind = (params.kind as string | undefined)?.toLowerCase() ?? 'revenue';
+    let result: FlashV2BuilderResult;
+    let label: string;
+    if (kind === 'rewards' || kind === 'reward') {
+      result = await signV2(context, 'collectTokenReward', { owner });
+      label = 'FAF rewards';
+    } else if (kind === 'rebate' || kind === 'rebates') {
+      result = await signV2(context, 'collectRebate', { owner, rebateTokenMint: usdc });
+      label = 'Referral rebate (USDC)';
+    } else {
+      result = await signV2(context, 'collectRevenue', { owner, revenueTokenMint: usdc });
+      label = 'Revenue share (USDC)';
+    }
+    return tokenCard('Claimed', 'close', label, [{ label: 'Claimed', value: c.primary(label) }], result, context);
+  },
+};
+
+export const magicReferral: ToolDefinition = {
+  name: 'magicReferral',
+  description: 'Create a referral relationship (default referrer = Dvv wallet). args: referrer? (address).',
+  parameters: z.object({ referrer: z.string().optional() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const referrer = ((params.referrer as string | undefined)?.trim() || referrerAddress());
+    if (referrer === owner) {
+      return { success: false, message: c.short('  You cannot refer yourself — the referrer must be a different wallet.') };
+    }
+    const result = await signV2(context, 'createReferral', { owner, referrer });
+    return tokenCard('Referral Set', 'open', `referrer ${referrer.slice(0, 6)}…${referrer.slice(-4)}`, [
+      { label: 'Referrer', value: c.primary(`${referrer.slice(0, 6)}…${referrer.slice(-4)}`) },
+    ], result, context);
+  },
+};
+
 export const magicTools: ToolDefinition[] = [
+  magicStake,
+  magicUnstake,
+  magicClaim,
+  magicReferral,
   magicVault,
   magicSettle,
   magicStatus,
