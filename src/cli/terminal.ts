@@ -982,6 +982,13 @@ export class MagicTerminal {
   constructor(config: MagicConfig, walletManager: WalletManager) {
     this.config = config;
     this.walletManager = walletManager;
+    // On idle auto-disconnect, mirror a manual `wallet disconnect`: tear down the
+    // background clients (blockhash/oracle warmers) + the reconciler so they stop
+    // polling on-chain for the just-disconnected wallet.
+    this.walletManager.setIdleDisconnectHandler(() => {
+      try { shutdownMagicClients(); } catch { /* best-effort */ }
+      void import('../core/state-reconciliation.js').then((m) => m.getReconciler().setClient(null)).catch(() => {});
+    });
     this.engine = getEngine();
     this.context = { walletManager, config };
     // AI is off for agents (NO_DNA) and under `--no-ai`; otherwise it activates

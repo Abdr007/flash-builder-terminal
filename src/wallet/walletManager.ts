@@ -36,6 +36,10 @@ export class WalletManager {
   private static readonly TOKEN_CACHE_TTL = 30_000;
 
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Optional teardown run after an IDLE auto-disconnect — lets the owner tear
+   *  down background clients/pollers (mirroring a manual `wallet disconnect`)
+   *  without this low-level module importing the client layer. */
+  private onIdleDisconnect: (() => void) | null = null;
   // Auto-disconnect after this many ms of inactivity (security guard for
   // unattended terminals). Default 4 hours — long enough for active trading
   // sessions, short enough to limit blast radius if a laptop is left open.
@@ -66,9 +70,18 @@ export class WalletManager {
       if (this.keypair) {
         getLogger().warn('WALLET', 'Session timed out due to inactivity — wallet disconnected for security');
         this.disconnect();
+        // Mirror a manual `wallet disconnect`: also tear down background clients
+        // and pollers, otherwise the just-disconnected wallet's blockhash/oracle
+        // warmers and reconciler keep polling on-chain until reconnect/exit.
+        try { this.onIdleDisconnect?.(); } catch { /* teardown is best-effort */ }
       }
     }, WalletManager.SESSION_TIMEOUT_MS);
     this.idleTimer.unref();
+  }
+
+  /** Register a teardown to run after an idle auto-disconnect (see above). */
+  setIdleDisconnectHandler(fn: (() => void) | null): void {
+    this.onIdleDisconnect = fn;
   }
 
   get isConnected(): boolean {
