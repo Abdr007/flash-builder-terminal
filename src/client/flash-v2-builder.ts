@@ -686,9 +686,11 @@ export class FlashV2BuilderClient {
     const attempts = opts?.attempts ?? 18;
     // Poll fast early (the ER confirms sub-second), then back off. Total window
     // stays ≈13s as a fail-safe for the rare slow case.
-    const fastIntervalMs = 200;
+    // The ER confirms in <350ms, so poll aggressively early to surface it ASAP,
+    // then back off as a fail-safe for the rare slow case.
+    const fastIntervalMs = 90;
     const slowIntervalMs = opts?.intervalMs ?? 750;
-    const fastAttempts = 8;
+    const fastAttempts = 12;
     for (let i = 0; i < attempts; i++) {
       this.lastConfirmAttempts = i + 1;
       try {

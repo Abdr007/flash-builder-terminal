@@ -1631,6 +1631,15 @@ export class MagicTerminal {
       return;
     }
 
+    // `er bench [url...]` — measure real getSlot RTT to the current ER endpoint
+    // plus any candidate URLs, so the fastest (lowest-latency) sequencer can be
+    // chosen and set via MAGIC_RPC_URL. The ER RTT is what every trade's submit +
+    // confirm pays, so this is the single biggest latency lever.
+    if (lower === 'er bench' || lower.startsWith('er bench ')) {
+      await this.handleErBench(line.split(/\s+/).slice(2));
+      return;
+    }
+
     // `rpc ...` subcommands — manage L1 RPC endpoints (set/add/remove/test/list).
     // Changes persist to ~/.magic/config.json so they survive restarts.
     if (lower === 'rpc' || lower.startsWith('rpc ')) {
@@ -2287,6 +2296,47 @@ export class MagicTerminal {
       }
       return 1;
     }
+  }
+
+  /**
+   * `er bench [url...]` — measure getSlot RTT to the current ER endpoint plus
+   * any candidate URLs. The ER round-trip is what every trade's submit + confirm
+   * pays, so picking the lowest-RTT sequencer (then `MAGIC_RPC_URL=<it>`) is the
+   * single biggest latency lever after the submit fix.
+   */
+  private async handleErBench(urls: string[]): Promise<void> {
+    const { Connection } = await import('@solana/web3.js');
+    const host = (u: string): string => { try { return new URL(u).hostname; } catch { return u; } };
+    const current = this.config.erRpcUrl ?? 'https://flashtrade.magicblock.app/';
+    const candidates = [...new Set([current, ...urls].filter((u) => /^https?:\/\//.test(u)))];
+    process.stdout.write(`\n  ${c.muted(`Benchmarking ${candidates.length} ER endpoint(s) — getSlot RTT ×7 …`)}\n\n`);
+    const results: { url: string; med: number; ok: number }[] = [];
+    for (const url of candidates) {
+      const conn = new Connection(url, 'confirmed');
+      const samples: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        const t0 = Date.now();
+        try { await conn.getSlot('confirmed'); samples.push(Date.now() - t0); } catch { /* unreachable */ }
+      }
+      const sorted = samples.sort((a, b) => a - b);
+      results.push({ url, med: sorted.length ? sorted[Math.floor(sorted.length / 2)] : Infinity, ok: sorted.length });
+    }
+    results.sort((a, b) => a.med - b.med);
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      const mark = r.med === Infinity ? c.short('✗') : i === 0 ? c.long('⚡') : c.muted('•');
+      const rtt = r.med === Infinity ? c.short('unreachable') : (i === 0 ? c.long : c.primary)(`${r.med}ms`);
+      const isCur = r.url === current ? c.faint('  (current)') : '';
+      process.stdout.write(`  ${mark}  ${rtt.padEnd(18)}${c.muted(host(r.url))}${isCur}\n`);
+    }
+    const best = results.find((r) => r.med !== Infinity);
+    if (best && best.url !== current) {
+      process.stdout.write(`\n  ${c.long('→')} ${c.muted('fastest is')} ${c.teal.bold(host(best.url))}${c.muted('. Use it:')}\n`);
+      process.stdout.write(`     ${c.teal.bold(`MAGIC_RPC_URL=${best.url} magic`)}\n`);
+    } else if (best) {
+      process.stdout.write(`\n  ${c.muted('current endpoint is already the fastest of these.')}\n`);
+    }
+    process.stdout.write('\n');
   }
 
   /**
