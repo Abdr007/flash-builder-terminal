@@ -10,13 +10,14 @@
  * When it runs:
  *   - On startup, once we have a wallet + client (called from terminal init).
  *   - On wallet switch (caller invokes `setClient` again).
- *   - Periodically every 60s thereafter while a client is attached.
- *   - After a trade (caller invokes `verifyTrade`).
+ *   - Periodically every 60s thereafter while a client is attached (cache warm
+ *     + a one-line "synced" REPL notice on the first reconcile per wallet).
  *
- * Output: writes a structured snapshot to memory. Surfaces a one-line REPL
- * notice on the first reconcile after each wallet change. Numerical values
- * are validated for finite-ness before being accepted; corrupted reads are
- * logged and skipped.
+ * Numerical values are validated for finite-ness before being accepted;
+ * corrupted reads are logged and skipped. Post-trade verification now lives in
+ * `FlashV2BuilderClient.signAndSubmit` (on-chain confirm), so this module no
+ * longer exposes a `verifyTrade`/snapshot API — that was dead (zero callers) and
+ * read as a safety net that wasn't wired.
  *
  * This is NOT a write-back system. The blockchain is authoritative — we only
  * pull. If there's a discrepancy with anything we have cached locally, the
@@ -42,7 +43,6 @@ export interface ReconcileSnapshot {
 class StateReconciler {
   private client: MagicTradeClient | null = null;
   private timer: NodeJS.Timeout | null = null;
-  private lastSnapshot: ReconcileSnapshot | null = null;
   private inflight: Promise<ReconcileSnapshot | null> | null = null;
   private firstReconcileDone = false;
   // Generational counter — incremented on every wallet switch. doReconcile
@@ -52,10 +52,6 @@ class StateReconciler {
   // has already cleared it, leaking the old wallet's positions into the new
   // session. Same idea protects against a reconcile racing an in-flight trade.
   private generation = 0;
-  // Set when the client is sending a trade — reconciler skips its tick to
-  // avoid overwriting state with a basket read that doesn't yet reflect the
-  // just-submitted trade (ER fast-confirms but L1 replication has a window).
-  private tradeInFlight = 0;
 
   /**
    * Set or replace the active client. Idempotent for the same instance — the
@@ -67,7 +63,6 @@ class StateReconciler {
     this.generation += 1;
     this.client = client;
     this.firstReconcileDone = false;
-    this.lastSnapshot = null;
     // Drop any in-flight Promise reference so a stale resolution can't race
     // a newly issued reconcile under the same gen.
     this.inflight = null;
@@ -80,10 +75,6 @@ class StateReconciler {
       t.unref?.();
     }
   }
-
-  /** Mark a trade as in-flight; reconciler skips while this is non-zero. */
-  beginTrade(): void { this.tradeInFlight += 1; }
-  endTrade(): void { this.tradeInFlight = Math.max(0, this.tradeInFlight - 1); }
 
   /** Begin periodic reconcile. Idempotent. No-op when no client is attached. */
   start(): void {
@@ -115,26 +106,9 @@ class StateReconciler {
     return me;
   }
 
-  /**
-   * After a trade, verify that the position-side actually exists (or was
-   * closed). Used to surface program-side rejections that slipped past the
-   * fast-confirm path.
-   */
-  async verifyTrade(symbol: string, side: 'long' | 'short', expected: 'open' | 'closed'): Promise<boolean> {
-    const snap = await this.reconcile();
-    if (!snap) return true; // fail-open — don't block trades on reconcile failure
-    const has = snap.positions.some((p) => p.symbol === symbol.toUpperCase() && p.side === side);
-    if (expected === 'open' && !has) return false;
-    if (expected === 'closed' && has) return false;
-    return true;
-  }
-
-  getLastSnapshot(): ReconcileSnapshot | null { return this.lastSnapshot; }
-
   private async doReconcile(): Promise<ReconcileSnapshot | null> {
     const client = this.client;
     if (!client) return null;
-    if (this.tradeInFlight > 0) return this.lastSnapshot; // skip during user-initiated trade
     // Capture the wallet/client generation at the start of the async work so
     // we can discard results that arrive after a wallet switch.
     const startGen = this.generation;
@@ -191,7 +165,6 @@ class StateReconciler {
       // would otherwise leak a snapshot from the previous wallet into the
       // new session. Synchronous re-check costs nothing.
       if (startGen !== this.generation) return null;
-      this.lastSnapshot = snap;
 
       if (!this.firstReconcileDone) {
         this.firstReconcileDone = true;
