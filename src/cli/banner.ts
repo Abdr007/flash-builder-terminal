@@ -126,6 +126,49 @@ export async function renderHero(): Promise<string> {
   return lines.join('\n');
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// Motion is opt-OUT and only ever runs on a real interactive color TTY. Agents
+// (NO_DNA), pipes / redirects (`isTTY` false), CI, NO_COLOR, and an explicit
+// `MAGIC_NO_ANIM` all get the instant static banner — identical bytes to
+// `renderHero()`, so nothing downstream (tests, one-shot, logs) is affected.
+const motionEnabled = (): boolean =>
+  useColor && !process.env.CI && !process.env.MAGIC_NO_ANIM && process.stdout.isTTY;
+
+/**
+ * Animated first-impression: draws the hero in top-to-bottom (the FLASH figlet
+ * reveals a line at a time with the brand gradient, then the tagline), instead
+ * of dumping it all at once. Pure sequential writes with small delays — no
+ * cursor-repositioning or in-place redraw, so it can never corrupt the terminal
+ * on any width or emulator. Total budget ~300 ms: premium, not sluggish.
+ *
+ * Falls back to the exact static `renderHero()` output whenever motion is off.
+ */
+export async function animateHero(): Promise<void> {
+  const hero = await renderHero();
+  const out = process.stdout;
+  if (!motionEnabled()) {
+    out.write(hero);
+    return;
+  }
+  const lines = hero.split('\n');
+  const restore = (): void => { try { out.write('\x1b[?25h'); } catch { /* ignore */ } };
+  // Guarantee the cursor comes back even if the process is interrupted mid-reveal.
+  process.once('exit', restore);
+  try {
+    out.write('\x1b[?25l'); // hide cursor during the draw-in
+    for (let i = 0; i < lines.length; i++) {
+      out.write(lines[i]);
+      if (i < lines.length - 1) out.write('\n');
+      // Stagger the "ink" lines (figlet art + tagline); blanks/dividers snap in.
+      await sleep(lines[i].trim().length === 0 ? 6 : 30);
+    }
+  } finally {
+    restore();
+    process.removeListener('exit', restore);
+  }
+}
+
 /**
  * Session panel — shown AFTER wallet connect by `MagicTerminal.start()`. The
  * figlet is intentionally omitted here so the user doesn't see it twice; this
