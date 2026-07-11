@@ -501,6 +501,22 @@ function slippageStr(params: Record<string, unknown>): string {
   return uiAmount(pct);
 }
 
+// Exits (close / partial-close / close-all) get a LOOSER default slippage than
+// entries: a protective close racing toward liquidation must not bounce off the
+// tight entry cap and leave the user stuck in a losing position. Never tighter
+// than the entry default; an explicit user `slippage` still wins. Override via
+// MAGIC_CLOSE_SLIPPAGE_PERCENT.
+const DEFAULT_CLOSE_SLIPPAGE_PCT = (() => {
+  const raw = Number(process.env.MAGIC_CLOSE_SLIPPAGE_PERCENT);
+  const chosen = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 50) : 1.5;
+  return Math.max(chosen, DEFAULT_SLIPPAGE_PCT);
+})();
+function closeSlippageStr(params: Record<string, unknown>): string {
+  const s = Number((params as { slippage?: unknown }).slippage);
+  const pct = Number.isFinite(s) && s > 0 ? Math.min(s, 50) : DEFAULT_CLOSE_SLIPPAGE_PCT;
+  return uiAmount(pct);
+}
+
 async function signV2(
   context: ToolContext,
   name: FlashV2BuilderName,
@@ -1806,7 +1822,7 @@ export const magicClose: ToolDefinition = {
       side: v2Side(side),
       inputUsdUi: uiAmount(existing.sizeUsd),
       withdrawTokenSymbol: (params.receiveToken as string | undefined)?.toUpperCase() ?? 'USDC',
-      slippagePercentage: slippageStr(params),
+      slippagePercentage: closeSlippageStr(params),
       closeAll: true,
     });
     if ('previewOnly' in result) {
@@ -2728,7 +2744,7 @@ export const magicPartialClose: ToolDefinition = {
       side: v2Side(side),
       sizeAmountUi: tokenSizeUi ?? await sizeUsdToTokenAmount(client, market, sizeUsd),
       withdrawTokenSymbol: 'USDC',
-      slippagePercentage: slippageStr(params),
+      slippagePercentage: closeSlippageStr(params), // exit: looser default (see closeSlippageStr)
     });
     if ('previewOnly' in r) {
       return { success: true, message: c.muted('  decrease preview only — no transaction returned'), data: { response: r.response } };
@@ -2781,7 +2797,7 @@ export const magicCloseAll: ToolDefinition = {
           side: v2Side(p.side),
           inputUsdUi: uiAmount(p.sizeUsd),
           withdrawTokenSymbol: 'USDC',
-          slippagePercentage: slippageStr({}), // close-all takes no per-call slippage; use default
+          slippagePercentage: closeSlippageStr({}), // close-all takes no per-call slippage; use default
           closeAll: true,
         });
         results.push({ market: p.market, side: p.side, ok: !('previewOnly' in r), sig: 'previewOnly' in r ? undefined : r.signature });

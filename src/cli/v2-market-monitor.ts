@@ -241,10 +241,22 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
     }
 
     void marketsRes; // timed only for telemetry (refreshOi populated the service)
+    // A genuinely-live feed publishes far more often than once a minute during
+    // open hours; beyond this, an OPEN market's quote is treated as frozen (not
+    // live) so we never render a stalled primary price as current.
+    const PYTH_STALE_LIMIT_S = 60;
     const rows: MarketRow[] = [];
     for (const s of specs) {
       const tp = pricesByTicker.get(s.pythTicker);
-      const pythLive = !!tp && Number.isFinite(tp.price) && tp.price > 0;
+      // Trading session (open/closed) — drives staleness. Computed up here (not
+      // just for the row below) so a stalled PRIMARY (Pyth) quote is suppressed
+      // while the market is OPEN, instead of rendering frozen as live. Closed
+      // markets legitimately carry an old publish time, so staleness is ignored
+      // when closed/on-break.
+      const session = pyth.marketSession(s.pythTicker);
+      const marketOpen = session.state !== 'closed' && session.state !== 'break';
+      const pythFrozen = marketOpen && !!tp && Number.isFinite(tp.staleSeconds) && tp.staleSeconds > PYTH_STALE_LIMIT_S;
+      const pythLive = !!tp && Number.isFinite(tp.price) && tp.price > 0 && !pythFrozen;
       // Never drop a market. Price source priority:
       //   1. Pyth Hermes (live) — primary; also gives 24h change.
       //   2. Flash /prices (live) — authoritative fallback for tokens Pyth has
@@ -319,10 +331,6 @@ export async function runV2MarketMonitor(deps: MonitorDeps, filter?: string): Pr
       prevOi.set(s.symbol, totalOi);
       prevLongPct.set(s.symbol, longPct);
       if (live) pushSnapshot(s.symbol, { timestamp: now, price, totalOi, longPct });
-
-      // Trading session — driven by Pyth's `attributes.schedule` per feed,
-      // with asset-class fallback for crypto / unknown.
-      const session = pyth.marketSession(s.pythTicker);
 
       // 24h volume: prefer fstats numbers (Flash's own indexer covers V1
       // markets), fall back to our in-process Anchor event indexer for
