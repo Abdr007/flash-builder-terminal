@@ -674,8 +674,11 @@ export function interpretCommand(rawInput: string, _config?: MagicConfig): Parse
     if (m) {
       const market = resolveMarket(m[1]);
       if (isKnownMarket(market)) {
-        const side = m[2] ? parseSide(m[2]) : 'long';
-        return { alias: 'reverse', params: { market, side: side ?? 'long' } };
+        const side = m[2] ? parseSide(m[2]) : undefined;
+        // No explicit side → let the tool resolve against the actual open
+        // position (reverse the unambiguous one; ask if both sides are held)
+        // instead of silently assuming long.
+        return { alias: 'reverse', params: side ? { market, side } : { market } };
       }
     }
   }
