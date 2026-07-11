@@ -1640,6 +1640,15 @@ export class MagicTerminal {
       return;
     }
 
+    // `instant on|off`, `turbo on|off`, `fast on|off` — runtime latency-mode
+    // toggles so the trader doesn't have to restart with an env var. `instant` =
+    // optimistic UI (render on fire, confirm in background). `turbo` = also build
+    // the ix client-side, skipping flashapi's build hop. `fast` = both.
+    if (/^(instant|turbo|fast)(\s+(on|off|1|0|true|false))?$/.test(lower)) {
+      this.handleLatencyMode(lower);
+      return;
+    }
+
     // `rpc ...` subcommands — manage L1 RPC endpoints (set/add/remove/test/list).
     // Changes persist to ~/.magic/config.json so they survive restarts.
     if (lower === 'rpc' || lower.startsWith('rpc ')) {
@@ -2296,6 +2305,26 @@ export class MagicTerminal {
       }
       return 1;
     }
+  }
+
+  /**
+   * `instant|turbo|fast [on|off]` — runtime latency-mode toggle. Mutates the
+   * process env the trade path reads (MAGIC_INSTANT / MAGIC_TURBO), so a trader
+   * can flip optimistic / client-side-build execution without restarting.
+   */
+  private handleLatencyMode(line: string): void {
+    const [cmd, arg] = line.trim().split(/\s+/);
+    const on = arg === undefined || arg === 'on' || arg === '1' || arg === 'true';
+    const set = (k: string, v: boolean): void => { if (v) process.env[k] = '1'; else delete process.env[k]; };
+    if (cmd === 'instant') set('MAGIC_INSTANT', on);
+    else if (cmd === 'turbo') set('MAGIC_TURBO', on);
+    else if (cmd === 'fast') { set('MAGIC_INSTANT', on); set('MAGIC_TURBO', on); }
+    const badge = (k: string): string => (process.env[k] === '1' ? c.long('● on') : c.muted('○ off'));
+    process.stdout.write(`\n  ${c.teal.bold('LATENCY MODE')}    instant ${badge('MAGIC_INSTANT')}   ·   turbo ${badge('MAGIC_TURBO')}\n`);
+    const anyOn = process.env.MAGIC_INSTANT === '1' || process.env.MAGIC_TURBO === '1';
+    process.stdout.write(anyOn
+      ? `  ${c.muted('trades render on fire + confirm in the background (optimistic) — a revert warns after.')}\n\n`
+      : `  ${c.muted('back to confirm-before-success (the card waits for the on-chain confirm).')}\n\n`);
   }
 
   /**
