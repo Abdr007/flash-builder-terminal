@@ -3303,6 +3303,7 @@ export class MagicTradeClient {
 
   /** Delegation needs an ER validator pubkey; `flashtrade.magicblock.app` exposes one. */
   private async fetchClosestValidatorKey(): Promise<PublicKey> {
+    let identity: PublicKey | null = null;
     try {
       // Bound the request: a hostile or simply-slow ER endpoint must not be
       // able to hang `delegateBasket` / `withdraw` indefinitely. 5s is well
@@ -3313,14 +3314,31 @@ export class MagicTradeClient {
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getValidatorIdentity' }),
         signal: AbortSignal.timeout(5_000),
       });
-      const json = (await res.json()) as { result?: { identity?: string } };
-      if (json.result?.identity) return new PublicKey(json.result.identity);
+      if (res.ok) {
+        const json = (await res.json()) as { result?: { identity?: string } };
+        if (json.result?.identity) identity = new PublicKey(json.result.identity);
+      }
     } catch {
-      // fall through
+      // fall through to the "could not fetch" error below
     }
-    // Fallback — well-known delegation program identity used as default validator.
-    // Caller can override by calling sdk.delegateBasket directly with their own DelegateConfig.
-    throw new Error('[magic-mode] could not fetch ER validator identity from router; supply a validatorKey explicitly');
+    if (!identity) {
+      throw new Error('[magic-mode] could not fetch ER validator identity from router; supply a validatorKey explicitly');
+    }
+    // Optional operator allowlist (defense-in-depth): the validator identity is
+    // self-reported by the (untrusted) ER router. Delegation still requires the
+    // owner's L1 signature and is L1-enforced, so a hostile router can at worst
+    // cause a stuck/censored delegation (owner-recoverable), not theft. A
+    // security-conscious operator can PIN the expected validator(s) via
+    // MAGIC_ALLOWED_VALIDATORS (comma-separated base58) to refuse anything else.
+    const allow = (process.env.MAGIC_ALLOWED_VALIDATORS ?? '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    if (allow.length > 0 && !allow.includes(identity.toBase58())) {
+      throw new Error(
+        `[magic-mode] router-reported validator ${identity.toBase58()} is not in the ` +
+          `MAGIC_ALLOWED_VALIDATORS allowlist — refusing to delegate`,
+      );
+    }
+    return identity;
   }
 
   /** Build positions array from Basket account, fetching real PnL/markPrice/liqPrice via SDK views. */
