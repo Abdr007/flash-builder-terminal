@@ -32,6 +32,7 @@ import {
 } from '../client/flash-v2-builder.js';
 import { formatPrice, formatUsd, formatUsdExact } from '../utils/format.js';
 import { getErrorMessage } from '../utils/retry.js';
+import { sanitizeText } from '../utils/sanitize-text.js';
 import { readMagicHistory, recordMagicTrade } from '../security/magic-history.js';
 import { startErHealthMonitor, getErHealthMonitor } from '../monitor/magic-er-health.js';
 import { startMagicAlerts, stopMagicAlerts, getMagicAlerts } from '../monitor/magic-alerts.js';
@@ -364,12 +365,12 @@ function compactJson(value: unknown, maxChars = 2200): string {
 
 function jsonRows(value: unknown): Array<{ label: string; value: string }> {
   if (!isJsonRecord(value)) {
-    return [{ label: 'Value', value: c.primary(String(value)) }];
+    return [{ label: 'Value', value: c.primary(sanitizeText(String(value))) }];
   }
   const rows: Array<{ label: string; value: string }> = [];
   for (const [key, raw] of Object.entries(value).slice(0, 12)) {
     if (raw === null || typeof raw !== 'object') {
-      rows.push({ label: key, value: c.primary(String(raw)) });
+      rows.push({ label: sanitizeText(key), value: c.primary(sanitizeText(String(raw))) });
     } else if (Array.isArray(raw)) {
       rows.push({ label: key, value: c.primary(`${raw.length} items`) });
     } else {
@@ -381,7 +382,13 @@ function jsonRows(value: unknown): Array<{ label: string; value: string }> {
 
 function fieldString(obj: Record<string, unknown>, key: string): string {
   const value = obj[key];
-  return typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value);
+  // Values here come from the (untrusted) API positions/tokens/custody payloads
+  // and are rendered raw into cards — unlike the confirm-card market symbol,
+  // they DON'T pass the interpreter's [a-z]+ input filter. Strip terminal
+  // control bytes so an API-supplied symbol like "SOL\x1b[1A…" can't repaint a
+  // balance/position card. Printable text (a real "SOL") is unchanged.
+  const s = typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value);
+  return sanitizeText(s);
 }
 
 function fieldNumber(obj: Record<string, unknown>, key: string): number {
@@ -2789,7 +2796,10 @@ export const magicPartialClose: ToolDefinition = {
     return {
       success: true,
       message: renderCard({
-        status: 'Partial Close',
+        // Honest status: decreasePosition is a trading-route builder, so the tx
+        // can be 'pending' (submitted, not yet confirmed). Don't claim a size
+        // reduction that hasn't landed.
+        status: confirmStatus(r, 'Partial Closed', 'Partial Close Submitted'),
         tone: 'close',
         // Same subtitle shape as the other trade cards.
         subtitle: marketHeader(sym, side),
@@ -2797,6 +2807,7 @@ export const magicPartialClose: ToolDefinition = {
         rows: [
           { label: 'Closed', value: c.short(`-${formatUsd(sizeUsd)}`) },
           ...builderTxRows(r, context.config.network),
+          ...pendingRows(r),
         ],
         url: solscanTx(r.signature, context.config.network),
       }),
@@ -2824,7 +2835,7 @@ export const magicCloseAll: ToolDefinition = {
         }),
       };
     }
-    const results: { market: string; side: string; ok: boolean; sig?: string; reason?: string }[] = [];
+    const results: { market: string; side: string; ok: boolean; pending?: boolean; sig?: string; reason?: string }[] = [];
     for (const p of positions) {
       try {
         const r = await signV2(context, 'closePosition', {
@@ -2836,7 +2847,11 @@ export const magicCloseAll: ToolDefinition = {
           slippagePercentage: closeSlippageStr({}), // close-all takes no per-call slippage; use default
           closeAll: true,
         });
-        results.push({ market: p.market, side: p.side, ok: !('previewOnly' in r), sig: 'previewOnly' in r ? undefined : r.signature });
+        const submitted = !('previewOnly' in r);
+        // A close whose tx submitted but couldn't be confirmed in the poll
+        // window must NOT be rendered as a definitive "✔ closed" — the user
+        // could walk away still exposed. Mark it pending.
+        results.push({ market: p.market, side: p.side, ok: submitted, pending: submitted && isPendingConfirm(r), sig: 'previewOnly' in r ? undefined : r.signature });
       } catch (err) {
         results.push({ market: p.market, side: p.side, ok: false, reason: getErrorMessage(err) });
       }
@@ -2845,7 +2860,9 @@ export const magicCloseAll: ToolDefinition = {
     const failed = results.length - ok;
     const rows = results.map((r) => {
       const sideColor = r.side === 'long' ? c.long : c.short;
-      const status = r.ok ? c.long('✔ closed') : c.short(`✖ ${r.reason ?? 'failed'}`);
+      const status = r.pending
+        ? c.warn('⏳ submitted — confirming')
+        : r.ok ? c.long('✔ closed') : c.short(`✖ ${r.reason ?? 'failed'}`);
       return {
         label: `${c.primary.bold(r.market.padEnd(7))} ${sideColor.bold(r.side.toUpperCase())}`,
         value: status,
@@ -2999,11 +3016,14 @@ export const magicPlaceLimit: ToolDefinition = {
     if (params.tp) rows.push({ label: 'Take Profit',  value: c.long(formatPrice(params.tp as number)) });
     if (params.sl) rows.push({ label: 'Stop Loss',    value: c.short(formatPrice(params.sl as number)) });
     rows.push(...builderTxRows(r, context.config.network));
+    rows.push(...pendingRows(r));
 
     return {
       success: true,
       message: renderCard({
-        status: 'Limit Order Placed',
+        // Trading-route builder → can be 'pending'. Don't claim a resting order
+        // exists until the placement tx confirms.
+        status: confirmStatus(r, 'Limit Order Placed', 'Limit Order Submitted'),
         tone: 'open',
         subtitle,
         columns: 1,

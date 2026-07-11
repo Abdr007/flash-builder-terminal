@@ -15,6 +15,20 @@ export async function readJsonCapped<T = unknown>(
   res: Response,
   maxBytes = 4_000_000,
 ): Promise<T> {
+  return JSON.parse(await readTextCapped(res, maxBytes)) as T;
+}
+
+/**
+ * Read a fetch Response body to a string with the SAME hard byte cap as
+ * `readJsonCapped`, but WITHOUT forcing `JSON.parse`. For callers that tolerate
+ * non-JSON bodies (e.g. an API that may return a plain-text error) and do their
+ * own conditional parse. Aborts the socket the instant the cap is exceeded and
+ * rejects an oversized Content-Length up front.
+ */
+export async function readTextCapped(
+  res: Response,
+  maxBytes = 4_000_000,
+): Promise<string> {
   const contentLength = res.headers.get('content-length');
   if (contentLength && Number.parseInt(contentLength, 10) > maxBytes) {
     throw new Error(`response too large: ${contentLength} bytes > ${maxBytes} cap`);
@@ -22,7 +36,7 @@ export async function readJsonCapped<T = unknown>(
   const reader = res.body?.getReader();
   // Undici always provides a streamable body; the fallback keeps type-safety if
   // a polyfilled fetch ever doesn't (Content-Length guard above still applies).
-  if (!reader) return (await res.json()) as T;
+  if (!reader) return await res.text();
   const decoder = new TextDecoder();
   let received = 0;
   let text = '';
@@ -39,5 +53,5 @@ export async function readJsonCapped<T = unknown>(
     }
   }
   text += decoder.decode();
-  return JSON.parse(text) as T;
+  return text;
 }

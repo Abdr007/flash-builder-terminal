@@ -3,6 +3,7 @@ import bs58 from 'bs58';
 import { assertNotKilled } from '../security/kill-switch.js';
 import { getSigningGuard, type SigningAuditEntry } from '../security/signing-guard.js';
 import { validateVersionedTxPrograms, assertRequiredSigners } from '../security/validate-programs.js';
+import { readTextCapped } from '../utils/fetch-json.js';
 
 export const FLASH_V2_API_URL = 'https://flashapi.trade';
 
@@ -657,11 +658,24 @@ export class FlashV2BuilderClient {
     signature: string,
     opts?: { attempts?: number; intervalMs?: number },
   ): Promise<{ status: FlashV2Confirmation; onChainError?: string }> {
-    const attempts = opts?.attempts ?? 18;      // ~13.5s worst case
-    const intervalMs = opts?.intervalMs ?? 750;
+    const attempts = opts?.attempts ?? 18;      // ~13.5s worst-case window (unchanged)
+    // Latency: mainnet/devnet commonly confirm in ~400-900ms. A fixed 750ms
+    // cadence surfaces a confirmed trade up to ~750ms later than necessary. Poll
+    // fast early (~250ms for the first several attempts), then back off to 750ms
+    // so the total window stays ≈13s. The fail-safe 'pending' return and the
+    // failed/confirmed honesty are UNCHANGED — this only tightens WHEN we look.
+    const fastIntervalMs = 250;
+    const slowIntervalMs = opts?.intervalMs ?? 750;
+    const fastAttempts = 6;
     for (let i = 0; i < attempts; i++) {
       try {
-        const st = await this.l1Connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+        // A just-submitted signature is in the RPC's recent-status cache;
+        // `searchTransactionHistory` forces an extra long-term-storage
+        // (Bigtable) lookup that adds latency to every poll for no benefit on a
+        // fresh tx. Use the fast recent-cache lookup for all but the final
+        // attempt, then enable history once as a safety net before giving up.
+        const searchTransactionHistory = i === attempts - 1;
+        const st = await this.l1Connection.getSignatureStatus(signature, { searchTransactionHistory });
         const v = st?.value;
         if (v) {
           if (v.err) return { status: 'failed', onChainError: JSON.stringify(v.err) };
@@ -673,7 +687,9 @@ export class FlashV2BuilderClient {
       } catch {
         /* transient RPC error — keep trying, then fall through to fail-safe 'pending' */
       }
-      if (i < attempts - 1) await new Promise((r) => setTimeout(r, intervalMs));
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, i < fastAttempts ? fastIntervalMs : slowIntervalMs));
+      }
     }
     return { status: 'pending' };
   }
@@ -688,7 +704,14 @@ export class FlashV2BuilderClient {
       },
       signal: init?.signal ?? AbortSignal.timeout(20_000),
     });
-    const text = await res.text();
+    // Byte-cap the read: this is the single choke-point for the ENTIRE
+    // money-moving API surface (every builder op + trade submit). A plain
+    // res.text() bounds time (the 20s AbortSignal) but NOT bytes — a hostile or
+    // MITM'd flashapi (or a poisoned baseUrl) could stream a multi-hundred-MB
+    // body within the window and OOM the single-threaded REPL. 8MB comfortably
+    // fits any legitimate tx/portfolio JSON. Non-JSON error bodies still pass
+    // through (the JSON.parse below falls back to raw text as before).
+    const text = await readTextCapped(res, 8_000_000);
     let body: unknown = null;
     if (text.length > 0) {
       try {
@@ -858,6 +881,24 @@ export class FlashV2BuilderClient {
           skipPreflight: opts.skipPreflight ?? false,
         });
       }
+      // AUDIT — submit-time marker: record the signature the INSTANT it exists,
+      // BEFORE the confirm poll. Otherwise a process kill during the ~13s confirm
+      // window (e.g. Ctrl-C on the "confirming…" spinner) would leave a real,
+      // on-the-wire (possibly landed) trade with NO audit record at all. The
+      // terminal confirmed/failed/submitted record is still written below on the
+      // normal path; this guarantees at-least-one record per signed+submitted tx.
+      // Best-effort — never block or throw on the money path.
+      try {
+        guard.logAudit({
+          timestamp: new Date().toISOString(),
+          type: auditType(name),
+          market: tl?.market, collateral: tl?.collateral, leverage: tl?.leverage, sizeUsd: tl?.sizeUsd,
+          walletAddress: owner,
+          result: 'submitted',
+          txSignature: signature,
+          reason: 'submit-time marker (pre-confirm)',
+        });
+      } catch { /* audit best-effort */ }
       // Confirm the tx actually LANDED before declaring success — a submit that
       // returns a signature can still revert on-chain (slippage / margin /
       // oracle / paused). Fail-safe: 'pending' when we can't confirm in the
@@ -900,12 +941,15 @@ export class FlashV2BuilderClient {
         confirmation: conf.status,
       };
       if (opts.refreshOwner) {
-        try {
-          result.snapshot = await this.owner(opts.refreshOwner);
-        } catch {
-          // Write responses are not final state. Snapshot refresh is best-effort;
-          // commands surface this rule in their user-facing cards.
-        }
+        // FIRE-AND-FORGET: `result.snapshot` is written here and read by NO
+        // caller (verified across src/) — every card renders from `response` /
+        // `confirmation` / `signature`. Awaiting this owner GET only delayed the
+        // success card by a full API round-trip (~50-150ms) on EVERY trade. Kick
+        // it off without blocking; `.catch` so a floating rejection can't crash
+        // the process. Confirmation is already fully determined above.
+        void this.owner(opts.refreshOwner).catch(() => {
+          /* best-effort warm; result intentionally unused */
+        });
       }
       return result;
     };
@@ -913,12 +957,31 @@ export class FlashV2BuilderClient {
     try {
       return await execute();
     } catch (err) {
-      if (!opts.retryExpiredBlockhash || !looksExpiredBlockhash(err)) throw err;
+      // AUDIT (Finding: unlogged signed-but-errored tx): if the tx was already
+      // SIGNED before this error — e.g. the submit POST threw AFTER signing, so
+      // the in-execute submit-time marker was never reached — record a marker
+      // now so a signed tx can never be entirely absent from the audit trail.
+      // Skip a REVERT (FlashV2TxRevertedError): its submit-time marker AND
+      // terminal 'failed' record were already written inside execute().
+      const auditSignedError = (): void => {
+        if (!lastSignedSig || err instanceof FlashV2TxRevertedError) return;
+        try {
+          getSigningGuard().logAudit({
+            timestamp: new Date().toISOString(),
+            type: auditType(name),
+            walletAddress: signers[0]?.publicKey.toBase58() ?? '',
+            result: 'submitted',
+            txSignature: lastSignedSig,
+            reason: 'signed; errored before terminal audit record',
+          });
+        } catch { /* audit best-effort */ }
+      };
+      if (!opts.retryExpiredBlockhash || !looksExpiredBlockhash(err)) { auditSignedError(); throw err; }
       // NEVER blind-retry a funds op (deposit / withdraw). A blockhash-expiry
       // error is ambiguous — the original may already have landed — and a
       // second submit could DOUBLE the deposit/withdrawal. Surface it so the
       // user retries deliberately.
-      if (spec.route === 'funds') throw err;
+      if (spec.route === 'funds') { auditSignedError(); throw err; }
       // Trading route: only rebuild+resubmit if the original signature is
       // provably NOT on chain. If it landed, or we can't confirm its absence,
       // fail safe (don't risk a double-open) and rethrow.
@@ -930,7 +993,7 @@ export class FlashV2BuilderClient {
       } catch {
         landed = true; // couldn't check → assume it might have landed
       }
-      if (landed) throw err;
+      if (landed) { auditSignedError(); throw err; }
       return execute();
     }
   }

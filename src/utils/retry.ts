@@ -6,6 +6,7 @@
 
 import { getLogger } from './logger.js';
 import { redactCommonSecrets } from '../security/redact-secrets.js';
+import { sanitizeText } from './sanitize-text.js';
 
 export interface RetryOptions {
   maxAttempts: number;
@@ -102,5 +103,12 @@ export function getErrorMessage(error: unknown): string {
   // that embeds a path- or query-token RPC URL would otherwise leak a paid
   // credential into stdout or a screenshot. Redaction only strips credential
   // shapes, so error-type keywords used for control flow are untouched.
-  return redactCommonSecrets(msg);
+  //
+  // Also strip terminal-control bytes: error messages frequently originate from
+  // the (untrusted) Flash API / RPC and are rendered into cards the user reads
+  // before signing — including the confirm-card "Preview unavailable — <err>"
+  // fallback. An API-controlled error carrying ANSI escapes could otherwise
+  // repaint the confirm card or forge a success line. sanitizeText leaves all
+  // printable text byte-identical, so legitimate error prose is unaffected.
+  return sanitizeText(redactCommonSecrets(msg));
 }
