@@ -44,6 +44,10 @@ function stubApi(owner: Keypair) {
     return new Response(JSON.stringify({ transactionBase64: txB64(owner) }), { status: 200 });
   });
   vi.stubGlobal('fetch', fetchMock);
+  // signAndSubmit now confirms on-chain before returning — resolve the confirm
+  // poll instantly so success-path tests don't wait on the real RPC. (Reject
+  // tests fail before submit, so they never reach this.)
+  vi.spyOn(connection, 'getSignatureStatus').mockResolvedValue({ value: { slot: 1, confirmations: 1, err: null, confirmationStatus: 'confirmed' } } as never);
   return fetchMock;
 }
 

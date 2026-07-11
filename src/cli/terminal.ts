@@ -1374,6 +1374,12 @@ export class MagicTerminal {
       subtitle = sideStr ? marketHeader(market, sideStr) : c.primary.bold(market);
       if (parsed.params.amount !== undefined) rows.push({ label: 'Amount',  value: c.primary(fmtUsd(Number(parsed.params.amount))) });
       if (parsed.params.percent !== undefined) rows.push({ label: 'Percent', value: c.primary(`${Number(parsed.params.percent).toFixed(0)}%`) });
+      // increase emits sizeUsd/addCollateralUsd; partial-close emits sizeUsd/sizePercent.
+      // These are the money fields being signed — the pre-sign gate MUST show them,
+      // or a fat-finger (500 vs 50) sails through unseen.
+      if (parsed.params.sizeUsd !== undefined) rows.push({ label: parsed.alias === 'increase' ? 'Add size' : 'Close size', value: c.primary(fmtUsd(Number(parsed.params.sizeUsd))) });
+      if (parsed.params.addCollateralUsd !== undefined) rows.push({ label: 'Add collateral', value: c.primary(fmtUsd(Number(parsed.params.addCollateralUsd))) });
+      if (parsed.params.sizePercent !== undefined) rows.push({ label: 'Percent', value: c.primary(`${Number(parsed.params.sizePercent).toFixed(0)}%`) });
       if (parsed.params.receiveToken !== undefined) rows.push({ label: 'Receive in', value: c.primary(String(parsed.params.receiveToken).toUpperCase()) });
       if (rows.length === 0) rows.push({ label: 'Action', value: c.primary(parsed.alias.toUpperCase()) });
     } else if (parsed.alias === 'add-collateral' || parsed.alias === 'remove-collateral') {

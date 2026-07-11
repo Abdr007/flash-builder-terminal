@@ -141,6 +141,9 @@ describe('FlashV2BuilderClient routing semantics', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const sendRawSpy = vi.spyOn(connection, 'sendRawTransaction');
+    // signAndSubmit now confirms on-chain before returning — mock a confirmed
+    // status so the confirm poll resolves immediately without a real RPC call.
+    vi.spyOn(connection, 'getSignatureStatus').mockResolvedValue({ value: { slot: 1, confirmations: 1, err: null, confirmationStatus: 'confirmed' } } as never);
     const client = new FlashV2BuilderClient({ baseUrl: 'https://flashapi.trade', l1Connection: connection });
 
     const result = await client.signAndSubmit('openPosition', {
@@ -152,6 +155,7 @@ describe('FlashV2BuilderClient routing semantics', () => {
     }, [signer]);
 
     expect('previewOnly' in result).toBe(false);
+    expect((result as { confirmation?: string }).confirmation).toBe('confirmed');
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
       'https://flashapi.trade/transaction-builder/open-position',
       'https://flashapi.trade/transaction-builder/submit-transaction',

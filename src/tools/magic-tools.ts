@@ -1762,10 +1762,15 @@ export const magicOpen: ToolDefinition = {
     if (params.sl) rows.push({ label: 'Stop Loss',   value: c.short(formatPrice(params.sl as number)) });
     rows.push(...builderTxRows(result, context.config.network));
 
+    // Honest status: signAndSubmit throws on an on-chain revert, so reaching here
+    // means the tx landed ('confirmed') or couldn't be confirmed in-window
+    // ('pending'). Never claim a definitive "Opened" for a still-pending tx.
+    const pendingOpen = result.confirmation !== 'confirmed';
+    if (pendingOpen) rows.push({ label: c.warn('Status'), value: c.warn('⏳ submitted — confirming on-chain') });
     return {
       success: true,
       message: renderCard({
-        status: 'Position Opened',
+        status: pendingOpen ? 'Position Submitted' : 'Position Opened',
         tone: 'open',
         subtitle: marketHeader(targetMarket, String(params.side), leverage),
         rows,
@@ -2923,6 +2928,9 @@ export const magicPlaceLimit: ToolDefinition = {
       tradeType: v2Side(sideStr),
       orderType: 'LIMIT',
       limitPrice: uiAmount(params.limitPrice as number),
+      // Client-side slippage guard on the eventual fill — every other open path
+      // sets this; a resting limit must not fill at the server default alone.
+      slippagePercentage: slippageStr(params),
       ...(params.tp ? { takeProfit: uiAmount(params.tp as number) } : {}),
       ...(params.sl ? { stopLoss: uiAmount(params.sl as number) } : {}),
     });
