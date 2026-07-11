@@ -517,6 +517,27 @@ function closeSlippageStr(params: Record<string, unknown>): string {
   return uiAmount(pct);
 }
 
+// ── On-chain confirmation → honest card status ──────────────────────────────
+// signAndSubmit THROWS on a revert, so reaching a success card means the tx
+// either landed ('confirmed') or couldn't be confirmed in the poll window
+// ('pending'). A pending trade must NOT render a definitive "Position Closed /
+// Reversed / Increased" — the user could believe they're flat/flipped while the
+// tx hasn't landed. These helpers give every mutation card the same honesty
+// magicOpen already has.
+export function isPendingConfirm(result: FlashV2BuilderResult): boolean {
+  return 'confirmation' in result && result.confirmation !== 'confirmed';
+}
+/** A "still confirming" row to append to a trade card when the tx is pending. */
+export function pendingRows(result: FlashV2BuilderResult): Array<{ label: string; value: string }> {
+  return isPendingConfirm(result)
+    ? [{ label: c.warn('Status'), value: c.warn('⏳ submitted — confirming on-chain') }]
+    : [];
+}
+/** Pick the definitive vs "…Submitted" title based on confirmation state. */
+export function confirmStatus(result: FlashV2BuilderResult, done: string, pending: string): string {
+  return isPendingConfirm(result) ? pending : done;
+}
+
 async function signV2(
   context: ToolContext,
   name: FlashV2BuilderName,
@@ -1706,11 +1727,11 @@ export const magicOpen: ToolDefinition = {
       // (`SOL · LONG · 2x`) with a "merged" footer dot. All trade cards
       // share the same theme so the user reads them at the same speed.
       const card = renderCard({
-        status: 'Position Increased',
+        status: confirmStatus(r, 'Position Increased', 'Increase Submitted'),
         tone: 'open',
         subtitle: `${marketHeader(targetMarket, targetSide, newLev)}  ${DOT}  ${c.muted('merged')}`,
         columns: 1,
-        rows,
+        rows: [...rows, ...pendingRows(r)],
         url: solscanTx(r.signature, context.config.network),
       });
       return { success: true, message: card, txSignature: r.signature, data: { merged: true, existing, added: { sizeUsd, collateral }, triggersRequested: params.tp !== undefined || params.sl !== undefined, triggersAttached, response: r.response } };
@@ -1831,11 +1852,12 @@ export const magicClose: ToolDefinition = {
     const pnl = fieldNumber(existing.raw, 'pnlWithFeeUsdUi');
     const pnlColor = pnl >= 0 ? chalk.green : chalk.red;
     const card = renderCard({
-      status: 'Position Closed',
+      status: confirmStatus(result, 'Position Closed', 'Close Submitted'),
       tone: 'close',
       subtitle: marketHeader(market, side),
       rows: [
         { label: 'PnL', value: chalk.bold(pnlColor(formatUsd(pnl))) },
+        ...pendingRows(result),
         ...builderTxRows(result, context.config.network),
       ],
       url: solscanTx(result.signature, context.config.network),
@@ -1880,13 +1902,14 @@ export const magicAddCollateral: ToolDefinition = {
     return {
       success: true,
       message: renderCard({
-        status: 'Collateral Added',
+        status: confirmStatus(result, 'Collateral Added', 'Add Submitted'),
         tone: 'open',
         subtitle: marketHeader(sym, sideStr),
         columns: 1,
         rows: [
           { label: 'Amount', value: amountLabel },
           { label: 'Asset',  value: c.primary(tokenSymbol ?? 'USDC') },
+          ...pendingRows(result),
           ...builderTxRows(result, context.config.network),
         ],
         url: solscanTx(result.signature, context.config.network),
@@ -1945,12 +1968,13 @@ export const magicRemoveCollateral: ToolDefinition = {
     return {
       success: true,
       message: renderCard({
-        status: 'Collateral Removed',
+        status: confirmStatus(result, 'Collateral Removed', 'Remove Submitted'),
         tone: 'close',
         subtitle: marketHeader(sym, sideStr),
         columns: 1,
         rows: [
           { label: 'Amount', value: c.short(`-${formatUsd(params.amount as number)}`) },
+          ...pendingRows(result),
           ...builderTxRows(result, context.config.network),
         ],
         url: solscanTx(result.signature, context.config.network),
@@ -2685,7 +2709,7 @@ export const magicReverse: ToolDefinition = {
     return {
       success: true,
       message: renderCard({
-        status: 'Position Reversed',
+        status: confirmStatus(result, 'Position Reversed', 'Reverse Submitted'),
         tone: 'info',
         // Same shape as open/close cards — `SOL · SHORT · 2x` — so the
         // three trade-card variants visually match. The previous
@@ -2699,6 +2723,7 @@ export const magicReverse: ToolDefinition = {
           { label: 'Liquidation', value: liq },
           { label: 'Size',        value: c.primary(formatUsdExact(fieldNumber(result.response, 'youRecieveUsdUi') || (inheritedCollateral * (leverage ?? 0)))) },
           { label: 'Collateral',  value: `${c.primary(formatUsdExact(inheritedCollateral))} ${c.muted('(carried over)')}` },
+          ...pendingRows(result),
           ...builderTxRows(result, context.config.network),
         ],
         url: solscanTx(result.signature, context.config.network),
@@ -2918,11 +2943,11 @@ export const magicIncrease: ToolDefinition = {
     return {
       success: true,
       message: renderCard({
-        status: 'Position Increased',
+        status: confirmStatus(r, 'Position Increased', 'Increase Submitted'),
         tone: 'open',
         subtitle: marketHeader(sym, sideStr),
         columns: 1,
-        rows,
+        rows: [...rows, ...pendingRows(r)],
         url: solscanTx(r.signature, context.config.network),
       }),
       txSignature: r.signature,

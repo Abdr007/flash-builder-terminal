@@ -1356,6 +1356,11 @@ export class MagicTerminal {
         }
 
         rows.push({ label: 'Pay',         value: c.primary(`${fmtUsd(collateral)} ${collateralToken}`) });
+        // Explicit Leverage row (not just the subtitle) so a misread of the
+        // args — e.g. `long sol 100 at 20` becoming 20x instead of a $20 limit
+        // entry — is UNMISSABLE before signing. Pay × Leverage = Size, read top
+        // to bottom.
+        rows.push({ label: 'Leverage',    value: c.primary.bold(`${Number.isInteger(leverage) ? leverage : (Math.round(leverage * 100) / 100)}x`) });
         rows.push({ label: 'Size',        value: c.primary.bold(fmtUsd(preview.sizeUsd)) });
         rows.push({ label: 'Entry',       value: c.primary(fmtPx(preview.entryPrice)) });
         rows.push({ label: 'Liquidation', value: liqValue });
