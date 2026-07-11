@@ -1807,6 +1807,9 @@ export const magicOpen: ToolDefinition = {
     // ix-build + sign + fire (~5-20ms) + the ER endpoint's RTT. Set the ER
     // endpoint via MAGIC_RPC_URL (e.g. your Asia sequencer) to minimize that RTT.
     // Requires the basket delegated to the ER (setup already does this).
+    // Turbo (client-side build, cheapest + lowest-latency) stays OPT-IN until
+    // verified end-to-end — enable with `turbo on` / MAGIC_TURBO=1. Instant is
+    // already the smooth default via the confirm path below.
     if (process.env.MAGIC_TURBO === '1') {
       const mc = buildMagicClient(context);
       const r = await mc.openPosition(
@@ -3672,13 +3675,25 @@ export const magicSettle: ToolDefinition = {
       };
     }
     const client = buildFlashV2Client(context);
-    const poolData = await client.poolData();
-    const symbols = new Set<string>();
-    for (const pool of isPoolData(poolData)) {
-      for (const cu of records(pool.custodyStats)) {
-        const sym = fieldString(cu, 'symbol').toUpperCase();
-        if (sym) symbols.add(sym);
-      }
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    // Only settle custodies where the user ACTUALLY has a pending balance.
+    // Iterating all ~65 pool custodies fired one tx each — hitting the trade
+    // rate limit after 10 and erroring `AccountNotInitialized` on every token
+    // the user never traded. Read the basket's pending debits/credits and settle
+    // just those (usually 1: USDC).
+    const balances = await readV2BasketTokenBalances(client, owner);
+    const symbols = [...balances.values()].filter((b) => b.total > 0).map((b) => b.symbol.toUpperCase());
+    if (symbols.length === 0) {
+      return {
+        success: true,
+        message: renderCard({
+          status: 'Nothing to Settle',
+          tone: 'info',
+          subtitle: c.muted('no pending balances'),
+          columns: 1,
+          rows: [{ label: '', value: c.muted('All balances are already available to trade.') }],
+        }),
+      };
     }
     const results: { symbol: string; sig?: string; err?: string }[] = [];
     for (const sym of symbols) {

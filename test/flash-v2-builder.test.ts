@@ -12,10 +12,13 @@ beforeEach(() => {
   // doesn't rate-limit them. (Production always calls initSigningGuard with the
   // user's real caps.)
   initSigningGuard({ maxLeverage: 0, maxCollateralPerTrade: 0, maxPositionSize: 0, maxTradesPerMinute: 0, minDelayBetweenTradesMs: 0 });
+  // Verify the strict confirm path here (optimistic/instant is default-on in prod).
+  process.env.MAGIC_INSTANT = '0';
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env.MAGIC_INSTANT;
 });
 
 function serializedV0TxBase64(signer: Keypair): string {

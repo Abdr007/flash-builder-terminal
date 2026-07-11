@@ -2383,9 +2383,11 @@ export class MagicTerminal {
     if (cmd === 'instant') set('MAGIC_INSTANT', on);
     else if (cmd === 'turbo') set('MAGIC_TURBO', on);
     else if (cmd === 'fast') { set('MAGIC_INSTANT', on); set('MAGIC_TURBO', on); }
-    const badge = (k: string): string => (process.env[k] === '1' ? c.long('● on') : c.muted('○ off'));
+    // instant is default-ON (opt-out with =0); turbo is opt-IN (needs =1).
+    const isOn = (k: string): boolean => (k === 'MAGIC_INSTANT' ? process.env[k] !== '0' : process.env[k] === '1');
+    const badge = (k: string): string => (isOn(k) ? c.long('● on') : c.muted('○ off'));
     process.stdout.write(`\n  ${c.teal.bold('LATENCY MODE')}    instant ${badge('MAGIC_INSTANT')}   ·   turbo ${badge('MAGIC_TURBO')}   ${c.faint('(saved — persists across restarts)')}\n`);
-    const anyOn = process.env.MAGIC_INSTANT === '1' || process.env.MAGIC_TURBO === '1';
+    const anyOn = isOn('MAGIC_INSTANT') || isOn('MAGIC_TURBO');
     process.stdout.write(anyOn
       ? `  ${c.muted('trades render on fire + confirm in the background (optimistic) — a revert warns after.')}\n\n`
       : `  ${c.muted('back to confirm-before-success (the card waits for the on-chain confirm).')}\n\n`);

@@ -981,7 +981,9 @@ export class FlashV2BuilderClient {
       // next prompt instead of blocking the card. Perceived latency drops to just
       // build+sign+fire (~85ms). Default OFF: the honest confirm-before-success
       // path (below) is unchanged unless the trader explicitly opts in.
-      const instant = process.env.MAGIC_INSTANT === '1' && spec.route === 'trading';
+      // Optimistic is the DEFAULT (fast + smooth out of the box) — opt OUT with
+      // MAGIC_INSTANT=0 (or `fast off`) for the strict confirm-before-success card.
+      const instant = process.env.MAGIC_INSTANT !== '0' && spec.route === 'trading';
       const conf: { status: FlashV2Confirmation; onChainError?: string } =
         instant
           ? { status: 'pending' }
