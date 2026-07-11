@@ -103,6 +103,17 @@ export interface FlashV2OperationSpec {
   allowed: readonly string[];
 }
 
+/**
+ * On-chain outcome of a submitted tx. A submit that returns a signature has NOT
+ * necessarily landed — it can still revert (slippage, margin, oracle deviation,
+ * paused market). We resolve this before declaring success.
+ *  - 'confirmed': landed with no error.
+ *  - 'failed':    landed with an on-chain error (reverted) — surfaced as a throw.
+ *  - 'pending':   could not reach a terminal status in the confirm window
+ *                 (fail-safe; never reported as confirmed).
+ */
+export type FlashV2Confirmation = 'confirmed' | 'failed' | 'pending';
+
 export interface FlashV2SignedResult {
   signature: string;
   route: FlashV2Route;
@@ -110,6 +121,21 @@ export interface FlashV2SignedResult {
   response: JsonObject;
   signedTransactionBase64: string;
   snapshot?: JsonObject;
+  /** Verified on-chain outcome. 'confirmed' or 'pending' here; 'failed' throws. */
+  confirmation: FlashV2Confirmation;
+}
+
+/** Thrown when a submitted tx reverted on-chain. Carries the signature so the
+ *  user can inspect it, and so callers never render a "success" card. */
+export class FlashV2TxRevertedError extends Error {
+  readonly signature: string;
+  readonly onChainError: string;
+  constructor(signature: string, onChainError: string) {
+    super(`transaction reverted on-chain (${onChainError}) — signature ${signature}`);
+    this.name = 'FlashV2TxRevertedError';
+    this.signature = signature;
+    this.onChainError = onChainError;
+  }
 }
 
 export interface FlashV2PreviewOnlyResult {
@@ -616,6 +642,42 @@ export class FlashV2BuilderClient {
     this.l1Connection = opts.l1Connection;
   }
 
+  /**
+   * Ask the chain whether a submitted tx actually LANDED before we declare
+   * success. A `/submit-transaction` that returns a signature only proves the
+   * bytes were accepted for propagation — the tx can still REVERT on-chain
+   * (slippage cap, insufficient margin, oracle deviation, paused market). Polls
+   * the same `getSignatureStatus` path the retry-recovery already relies on.
+   *
+   * FAIL-SAFE: on RPC trouble or if no terminal status appears within the
+   * window, returns 'pending' — NEVER a false 'confirmed'. A definite on-chain
+   * error returns 'failed' (the caller throws so no success card is rendered).
+   */
+  private async confirmOnChain(
+    signature: string,
+    opts?: { attempts?: number; intervalMs?: number },
+  ): Promise<{ status: FlashV2Confirmation; onChainError?: string }> {
+    const attempts = opts?.attempts ?? 18;      // ~13.5s worst case
+    const intervalMs = opts?.intervalMs ?? 750;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const st = await this.l1Connection.getSignatureStatus(signature, { searchTransactionHistory: true });
+        const v = st?.value;
+        if (v) {
+          if (v.err) return { status: 'failed', onChainError: JSON.stringify(v.err) };
+          if (v.confirmationStatus === 'confirmed' || v.confirmationStatus === 'finalized') {
+            return { status: 'confirmed' };
+          }
+          // 'processed' only → keep polling for a firmer (err-bearing or confirmed) status.
+        }
+      } catch {
+        /* transient RPC error — keep trying, then fall through to fail-safe 'pending' */
+      }
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return { status: 'pending' };
+  }
+
   async request(path: string, init?: RequestInit): Promise<unknown> {
     const res = await fetch(endpointUrl(this.baseUrl, path), {
       ...init,
@@ -717,7 +779,7 @@ export class FlashV2BuilderClient {
     name: FlashV2BuilderName,
     body: Record<string, unknown>,
     signers: Keypair[],
-    opts: { skipPreflight?: boolean; refreshOwner?: string; retryExpiredBlockhash?: boolean; tradeLimits?: TradeLimitParams } = {},
+    opts: { skipPreflight?: boolean; refreshOwner?: string; retryExpiredBlockhash?: boolean; tradeLimits?: TradeLimitParams; confirmAttempts?: number; confirmIntervalMs?: number } = {},
   ): Promise<FlashV2BuilderResult> {
     const spec = FLASH_V2_BUILDERS[name];
     // Signature of the most recently signed tx (set just before submit) so the
@@ -796,7 +858,20 @@ export class FlashV2BuilderClient {
           skipPreflight: opts.skipPreflight ?? false,
         });
       }
-      // Audit trail — every signed+submitted tx is recorded (best-effort).
+      // Confirm the tx actually LANDED before declaring success — a submit that
+      // returns a signature can still revert on-chain (slippage / margin /
+      // oracle / paused). Fail-safe: 'pending' when we can't confirm in the
+      // window; 'failed' is thrown below so no caller can render a success card.
+      // Trading route only: funds ops (deposit/withdraw) already render 'pending'
+      // cards and run the authoritative verify-withdraw ATA check downstream, so
+      // we don't perturb that flow with a second confirmation here.
+      const conf: { status: FlashV2Confirmation; onChainError?: string } =
+        spec.route === 'trading'
+          ? await this.confirmOnChain(signature, { attempts: opts.confirmAttempts, intervalMs: opts.confirmIntervalMs })
+          : { status: 'pending' };
+      const auditResult =
+        conf.status === 'confirmed' ? 'confirmed' : conf.status === 'failed' ? 'failed' : 'submitted';
+      // Audit trail — records the REAL on-chain outcome, not a blanket 'confirmed'.
       try {
         guard.logAudit({
           timestamp: new Date().toISOString(),
@@ -806,16 +881,23 @@ export class FlashV2BuilderClient {
           leverage: tl?.leverage,
           sizeUsd: tl?.sizeUsd,
           walletAddress: owner,
-          result: 'confirmed',
+          result: auditResult,
           txSignature: signature,
+          ...(conf.onChainError ? { reason: `on-chain error: ${conf.onChainError}` } : {}),
         });
-      } catch { /* audit is best-effort; never block a completed trade */ }
+      } catch { /* audit is best-effort; never block on it */ }
+      if (conf.status === 'failed') {
+        // Reverted on-chain — surface as a failure so no "Position Opened" card
+        // is ever rendered for a trade that did not land.
+        throw new FlashV2TxRevertedError(signature, conf.onChainError ?? 'unknown');
+      }
       const result: FlashV2SignedResult = {
         signature,
         route: spec.route,
         rpc,
         response,
         signedTransactionBase64,
+        confirmation: conf.status,
       };
       if (opts.refreshOwner) {
         try {

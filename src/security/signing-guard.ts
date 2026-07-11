@@ -71,7 +71,10 @@ export interface SigningAuditEntry {
   leverage?: number;
   sizeUsd?: number;
   walletAddress: string;
-  result: 'confirmed' | 'rejected' | 'failed' | 'rate_limited';
+  // 'submitted' = accepted for propagation but not yet confirmed on-chain
+  // (the honest state before a terminal status is known); 'confirmed' only after
+  // an on-chain check with no error; 'failed' = reverted on-chain.
+  result: 'confirmed' | 'submitted' | 'rejected' | 'failed' | 'rate_limited';
   reason?: string;
   txSignature?: string;
   latencyMs?: number;
