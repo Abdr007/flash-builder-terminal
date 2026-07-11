@@ -2354,6 +2354,9 @@ export class MagicTerminal {
       network: networkFlag,
       rl: this.rl,
       maskRpc: !quick,
+      // Preserve the user's current (often paid) RPC as the [enter] default so
+      // re-running `init` never silently downgrades them to public mainnet.
+      defaultRpc: this.config.l1RpcUrl,
     });
     if (result.cancelled) {
       this.lastFailed = false;

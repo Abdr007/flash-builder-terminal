@@ -51,6 +51,13 @@ interface WizardOptions {
   /** Override network (`mainnet-beta` default). */
   network?: 'mainnet-beta' | 'devnet';
   /**
+   * The currently-active RPC URL. When set, it becomes the [enter] default (and
+   * the quick-mode value) instead of the public RPC — so re-running `init` and
+   * pressing enter KEEPS the user's existing (often paid) endpoint rather than
+   * silently downgrading them to rate-limited public mainnet.
+   */
+  defaultRpc?: string;
+  /**
    * Reuse an already-open readline interface instead of creating a new one.
    *
    * CRITICAL: when `init` runs from inside the REPL the terminal already owns
@@ -231,6 +238,12 @@ export async function runInitWizard(
   const publicRpc = network === 'devnet'
     ? 'https://api.devnet.solana.com'
     : 'https://api.mainnet-beta.solana.com';
+  // If the caller already has a non-public RPC (e.g. Helius from config.json),
+  // make THAT the [enter] default so re-running `init` never silently downgrades
+  // a paid endpoint to rate-limited public mainnet.
+  const isPublicRpc = (u?: string): boolean => !u || /api\.(mainnet-beta|devnet)\.solana\.com/i.test(u);
+  const rpcDefault = opts.defaultRpc && !isPublicRpc(opts.defaultRpc) ? opts.defaultRpc : publicRpc;
+  const rpcHost = (u: string): string => { try { return new URL(u).hostname; } catch { return u; } };
 
   const envPath = userEnvFilePath();
   const dir = dirname(envPath);
@@ -263,8 +276,9 @@ export async function runInitWizard(
   // ── RPC: zero prompts in quick mode, exactly ONE prompt otherwise ──
   let l1RpcUrl: string;
   if (opts.quick) {
-    l1RpcUrl = publicRpc;
-    process.stdout.write(`  ${c.long('✔')}  ${c.muted('RPC:')} ${c.faint(publicRpc)} ${c.muted('(public — quick mode)')}\n`);
+    l1RpcUrl = rpcDefault;
+    const tag = rpcDefault === publicRpc ? '(public — quick mode)' : '(kept current)';
+    process.stdout.write(`  ${c.long('✔')}  ${c.muted('RPC:')} ${c.faint(rpcHost(rpcDefault))} ${c.muted(tag)}\n`);
   } else {
     // Reuse the caller's readline when given one (the REPL already owns
     // stdin — opening a second interface double-echoes every keystroke).
@@ -279,15 +293,17 @@ export async function runInitWizard(
     if (ownRl) rl.on('SIGINT', onSigint);
 
     process.stdout.write('\n');
-    const hint = opts.maskRpc
-      ? `  ${c.faint('RPC URL — paste Helius / QuickNode / Triton (hidden), or')} ${c.cyan('[enter]')} ${c.faint('for public')}\n`
-      : `  ${c.faint('RPC URL — paste Helius / QuickNode / Triton, or')} ${c.cyan('[enter]')} ${c.faint('for public')}\n`;
-    process.stdout.write(hint);
+    // When a current (paid) RPC exists, [enter] KEEPS it; otherwise [enter] = public.
+    const enterHint = rpcDefault === publicRpc
+      ? `${c.cyan('[enter]')} ${c.faint('for public')}`
+      : `${c.cyan('[enter]')} ${c.faint(`to keep ${rpcHost(rpcDefault)}`)}`;
+    const maskTag = opts.maskRpc ? ' (hidden)' : '';
+    process.stdout.write(`  ${c.faint(`RPC URL — paste Helius / QuickNode / Triton${maskTag}, or`)} ${enterHint}\n`);
 
     let ok = false;
     while (!ok) {
       const ask = opts.maskRpc ? promptMasked : promptOne;
-      const raw = await ask(rl, `  ${c.muted('>')} `, publicRpc);
+      const raw = await ask(rl, `  ${c.muted('>')} `, rpcDefault);
       try {
         l1RpcUrl = validateRpcUrl(raw, 'L1 RPC');
         ok = true;
@@ -301,7 +317,7 @@ export async function runInitWizard(
       rl.removeListener('SIGINT', onSigint);
       rl.close();
     }
-    l1RpcUrl ??= publicRpc;
+    l1RpcUrl ??= rpcDefault;
   }
 
   // ── Probe the RPC with a tiny spinner-style line ───────────────────

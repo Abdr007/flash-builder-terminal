@@ -18,7 +18,7 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { readFileSync, statSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { resolve } from 'path';
-import { ToolDefinition, ToolContext, ToolResult } from '../types/index.js';
+import { ToolDefinition, ToolContext, ToolResult, TradeSide } from '../types/index.js';
 import { MagicTradeClient } from '../client/magic-client.js';
 import {
   FlashV2BuilderClient,
@@ -260,12 +260,16 @@ export function buildFlashV2Client(context: ToolContext): FlashV2BuilderClient {
     context.config.l1RpcUrl ??
     (context.config.network === 'mainnet-beta' ? 'https://api.mainnet-beta.solana.com' : 'https://api.devnet.solana.com');
   const apiUrl = context.config.flashApiUrl ?? 'https://flashapi.trade';
-  const cacheKey = `${apiUrl}:${l1Url}`;
+  // The ER endpoint Flash V2 trades land on — confirmation must be polled HERE
+  // (it confirms in <1s), not on L1 (where the sig only settles seconds later).
+  const erEndpoint = context.config.erRpcUrl ?? 'https://flashtrade.magicblock.app/';
+  const cacheKey = `${apiUrl}:${l1Url}:${erEndpoint}`;
   const cached = _flashV2ClientCache.get(cacheKey);
   if (cached) return cached;
   const client = new FlashV2BuilderClient({
     baseUrl: apiUrl,
     l1Connection: new Connection(l1Url, 'confirmed'),
+    erConnection: new Connection(erEndpoint, 'confirmed'),
   });
   _flashV2ClientCache.set(cacheKey, client);
   return client;
@@ -484,14 +488,18 @@ async function sizeUsdToTokenAmount(client: FlashV2BuilderClient, market: string
   return uiAmount(sizeUsd / px);
 }
 
-function builderTxRows(result: FlashV2BuilderResult, network: 'mainnet-beta' | 'devnet'): Array<{ label: string; value: string }> {
+function builderTxRows(result: FlashV2BuilderResult, _network: 'mainnet-beta' | 'devnet'): Array<{ label: string; value: string }> {
   if ('previewOnly' in result) {
     return [{ label: 'Mode', value: c.muted('preview only — no transaction returned') }];
   }
-  return [
-    { label: 'Tx', value: c.muted(solscanTx(result.signature, network)) },
-    { label: 'State', value: c.muted('re-read basket snapshot / stream for final state') },
-  ];
+  // Compact signature only — the full clickable explorer link is rendered once,
+  // BELOW the card, via each card's `url:` field. Printing the whole URL here
+  // too made every trade card wrap into an unreadable wall (and duplicated the
+  // link). The dropped "re-read basket snapshot / stream for final state" row
+  // was jargon that told the user nothing actionable.
+  const sig = result.signature;
+  const shortSig = sig.length > 14 ? `${sig.slice(0, 6)}…${sig.slice(-6)}` : sig;
+  return [{ label: 'Tx', value: c.muted(shortSig) }];
 }
 
 // Client-side slippage cap (a PERCENT, sent to the API as a string). Every
@@ -1077,26 +1085,61 @@ export const magicSetup: ToolDefinition = {
   description: 'One-time V2 setup: initialize deposit ledger, basket, and delegate basket.',
   async execute(_params, context): Promise<ToolResult> {
     const owner = ownerKeypair(context).publicKey.toBase58();
-    const steps: string[] = [];
 
-    for (const [label, op] of [
-      ['DepositLedger', 'initDepositLedger'],
-      ['Basket', 'initBasket'],
-      ['Delegate', 'delegateBasket'],
-    ] as const) {
-      try {
-        const result = await signV2(context, op, { owner });
-        if ('previewOnly' in result) steps.push(`✓ ${label}: preview only`);
-        else steps.push(`✓ ${label}: ${result.signature}`);
-      } catch (err) {
-        steps.push(`✗ ${label}: ${getErrorMessage(err)}`);
-      }
+    // Idempotency pre-check (one read, no signatures): the deposit-ledger,
+    // basket, and delegation state are all on-chain. Re-running the Builder init
+    // for an account that already exists makes the FLASH6 program reject the tx
+    // with a scary error (ConstraintSpace / AccountOwnedByWrongProgram / "modified
+    // data of an account it does not own"). Detect what's already done and SKIP
+    // it, so a re-run reads as "already set up" instead of a wall of failures.
+    let udlExists = false;
+    let basketExists = false;
+    let delegated = false;
+    try {
+      const wrap = buildMagicClient(context) as unknown as {
+        l1Connection: import('@solana/web3.js').Connection;
+        basketPda: PublicKey;
+        userDepositLedgerPda: PublicKey;
+      };
+      const [basketInfo, udlInfo] = await wrap.l1Connection.getMultipleAccountsInfo(
+        [wrap.basketPda, wrap.userDepositLedgerPda], 'confirmed',
+      );
+      udlExists = !!udlInfo;
+      basketExists = !!basketInfo;
+      delegated = basketInfo?.owner.toBase58() === ER_DELEGATION_PROGRAM_ID;
+    } catch {
+      /* read failed — fall through and attempt the steps (old behavior) */
     }
 
+    const steps: Array<{ label: string; value: string }> = [];
+    const run = async (label: string, op: 'initDepositLedger' | 'initBasket' | 'delegateBasket', skip: boolean): Promise<void> => {
+      if (skip) { steps.push({ label, value: c.long('✓ already done') }); return; }
+      try {
+        const result = await signV2(context, op, { owner });
+        steps.push({ label, value: 'previewOnly' in result ? c.muted('preview only') : c.long('✓ done') });
+      } catch (err) {
+        steps.push({ label, value: c.short(`✗ ${getErrorMessage(err)}`) });
+      }
+    };
+
+    // A delegated basket implies the ledger + basket already exist, so skip both.
+    await run('Deposit ledger', 'initDepositLedger', udlExists || delegated);
+    await run('Basket', 'initBasket', basketExists || delegated);
+    await run('Delegate to ER', 'delegateBasket', delegated);
+
+    const allDone = udlExists && basketExists && delegated;
     return {
       success: true,
-      message: steps.join('\n'),
-      data: { steps },
+      message: renderCard({
+        status: allDone ? 'Already Set Up' : 'Setup',
+        tone: allDone ? 'info' : 'open',
+        subtitle: allDone
+          ? c.muted('deposit ledger + basket + delegation all in place')
+          : c.muted('one-time per-wallet on-chain setup'),
+        columns: 1,
+        rows: steps,
+      }),
+      data: { steps, allDone },
     };
   },
 };
@@ -1173,7 +1216,6 @@ export const magicDepositDirect: ToolDefinition = {
         rows: [
           { label: 'Mint', value: c.primary.bold(tokenMint) },
           { label: 'Amount', value: c.primary(String(amountHuman)) },
-          { label: 'State', value: c.muted('re-read basket snapshot / stream for final state') },
         ],
         url: solscanTx(result.signature, context.config.network),
       }),
@@ -1473,14 +1515,24 @@ export const magicWithdraw: ToolDefinition = {
     }
 
     const feePayer = withdrawFeePayer(context, owner.publicKey);
+    // The V2 program requires feePayer !== owner, so with no configured payer we
+    // use a throwaway keypair — which has 0 SOL and cannot pay the ATA-creation
+    // rent, making the withdraw fail with "insufficient lamports 0, need …".
+    // Default a top-up (funded by the owner, who signs this tx) so a first-time
+    // withdraw works out of the box. An explicitly configured, pre-funded
+    // fee-payer path skips this and keeps its configured (or zero) top-up.
+    const feePayerGenerated = !context.config.withdrawFeePayerPath;
+    const DEFAULT_FEE_PAYER_TOPUP_LAMPORTS = 3_000_000; // ~0.003 SOL: ATA rent (~0.00204) + fee buffer
+    const topUpLamports =
+      context.config.withdrawFeePayerTopUpLamports && context.config.withdrawFeePayerTopUpLamports > 0
+        ? context.config.withdrawFeePayerTopUpLamports
+        : feePayerGenerated ? DEFAULT_FEE_PAYER_TOPUP_LAMPORTS : 0;
     const body: Record<string, unknown> = {
       owner: owner.publicKey.toBase58(),
       tokenSymbol: symbol,
       amount: uiAmount(amountHuman),
       feePayer: feePayer.publicKey.toBase58(),
-      ...(context.config.withdrawFeePayerTopUpLamports && context.config.withdrawFeePayerTopUpLamports > 0
-        ? { feePayerTopUpLamports: context.config.withdrawFeePayerTopUpLamports }
-        : {}),
+      ...(topUpLamports > 0 ? { feePayerTopUpLamports: topUpLamports } : {}),
     };
     const result = await client.signAndSubmit('withdraw', body, [owner, feePayer], {
       refreshOwner: owner.publicKey.toBase58(),
@@ -1503,9 +1555,7 @@ export const magicWithdraw: ToolDefinition = {
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Token',  value: c.primary.bold(symbol) },
       { label: 'Amount', value: c.primary(`${amountFmt} ${symbol}`) },
-      { label: 'Fee payer', value: c.muted(`${feePayer.publicKey.toBase58().slice(0, 8)}…${feePayer.publicKey.toBase58().slice(-4)}`) },
-      { label: 'Tx', value: c.muted(solscanTx(result.signature, context.config.network)) },
-      { label: 'State', value: c.muted('re-read basket snapshot / stream for final state') },
+      { label: 'Tx', value: c.muted(result.signature.length > 14 ? `${result.signature.slice(0, 6)}…${result.signature.slice(-6)}` : result.signature) },
     ];
     if (custodySettlementRequired) {
       rows.push({ label: 'Recovery', value: c.warn('run `custody-settlement ' + symbol + '` then retry withdraw') });
@@ -1520,6 +1570,7 @@ export const magicWithdraw: ToolDefinition = {
       subtitle: `${DIAMOND}  ${c.muted('Flash Account → wallet · pending confirmation')}`,
       columns: 1,
       rows,
+      url: solscanTx(result.signature, context.config.network),
     });
 
     return {
@@ -1742,6 +1793,59 @@ export const magicOpen: ToolDefinition = {
         url: solscanTx(r.signature, context.config.network),
       });
       return { success: true, message: card, txSignature: r.signature, data: { merged: true, existing, added: { sizeUsd, collateral }, triggersRequested: params.tp !== undefined || params.sl !== undefined, triggersAttached, response: r.response } };
+    }
+
+    // ── TURBO PATH (opt-in, MAGIC_TURBO=1): lowest latency ────────────────────
+    // Build the open-position instruction CLIENT-SIDE via the ER SDK — reusing
+    // the quote the confirm-card preview already computed (cached <5s) — and fire
+    // it async to the ER (skipConfirm) instead of the flashapi build+submit round
+    // trips. The card renders the instant the tx is fired; a background watcher
+    // confirms and warns on the rare revert. Perceived latency collapses to local
+    // ix-build + sign + fire (~5-20ms) + the ER endpoint's RTT. Set the ER
+    // endpoint via MAGIC_RPC_URL (e.g. your Asia sequencer) to minimize that RTT.
+    // Requires the basket delegated to the ER (setup already does this).
+    if (process.env.MAGIC_TURBO === '1') {
+      const mc = buildMagicClient(context);
+      const r = await mc.openPosition(
+        targetMarket,
+        targetSide === 'short' ? TradeSide.Short : TradeSide.Long,
+        collateral,
+        leverage,
+        (params.collateralToken as string | undefined),
+        params.tp as number | undefined,
+        params.sl as number | undefined,
+      );
+      const liqStr = r.liquidationPrice > 0 ? chalk.yellow(formatPrice(r.liquidationPrice)) : chalk.dim('N/A');
+      let distPct = 0;
+      if (Number.isFinite(r.entryPrice) && r.entryPrice > 0 && Number.isFinite(r.liquidationPrice) && r.liquidationPrice > 0) {
+        const raw = targetSide === 'long' ? (r.entryPrice - r.liquidationPrice) / r.entryPrice : (r.liquidationPrice - r.entryPrice) / r.entryPrice;
+        distPct = Math.max(0, raw) * 100;
+      }
+      const distColor = distPct >= 30 ? c.long : distPct >= 15 ? c.warn : c.short;
+      const turboRows: Array<{ label: string; value: string }> = [
+        { label: 'Entry', value: chalk.bold(formatPrice(r.entryPrice)) },
+        { label: 'Liquidation', value: liqStr },
+      ];
+      if (distPct > 0) turboRows.push({ label: 'Dist to Liq', value: distColor(`${distPct.toFixed(2)}%`) });
+      turboRows.push(
+        { label: 'Size', value: chalk.bold(formatUsdExact(r.sizeUsd)) },
+        { label: 'Collateral', value: formatUsdExact(collateral) },
+        { label: 'Tx', value: c.muted(r.txSignature.length > 14 ? `${r.txSignature.slice(0, 6)}…${r.txSignature.slice(-6)}` : r.txSignature) },
+        { label: c.warn('Status'), value: c.warn('⚡ turbo — submitted, confirming in background') },
+      );
+      return {
+        success: true,
+        message: renderCard({
+          status: 'Position Submitted',
+          tone: 'open',
+          subtitle: marketHeader(targetMarket, String(params.side), leverage),
+          columns: 1,
+          rows: turboRows,
+          url: solscanTx(r.txSignature, context.config.network),
+        }),
+        txSignature: r.txSignature,
+        data: { turbo: true, entryPrice: r.entryPrice, sizeUsd: r.sizeUsd },
+      };
     }
 
     // No existing position — normal atomic open + (optional) inline TP/SL.

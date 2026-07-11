@@ -638,10 +638,23 @@ export function uiAmount(value: string | number): string {
 export class FlashV2BuilderClient {
   readonly baseUrl: string;
   private readonly l1Connection: Connection;
+  /** Connection to the MagicBlock ER the trades actually land on. Confirmation
+   *  MUST be polled here (it confirms in <1s), not on L1 (where the signature
+   *  only settles seconds later). Optional so funds-only / test callers can omit. */
+  private readonly erConnection?: Connection;
+  /** How many status polls the last confirmOnChain took (diagnostics). */
+  private lastConfirmAttempts = 0;
 
-  constructor(opts: { baseUrl?: string; l1Connection: Connection }) {
+  constructor(opts: { baseUrl?: string; l1Connection: Connection; erConnection?: Connection }) {
     this.baseUrl = opts.baseUrl ?? FLASH_V2_API_URL;
     this.l1Connection = opts.l1Connection;
+    this.erConnection = opts.erConnection;
+  }
+
+  /** A MagicBlock Ephemeral Rollup endpoint — single-sequencer instant finality,
+   *  so a `processed` status there is TERMINAL (unlike an L1 `processed`). */
+  private static isEphemeralRollup(url: string | undefined): boolean {
+    return !!url && /magicblock\.app/i.test(url);
   }
 
   /**
@@ -659,31 +672,43 @@ export class FlashV2BuilderClient {
     signature: string,
     opts?: { attempts?: number; intervalMs?: number },
   ): Promise<{ status: FlashV2Confirmation; onChainError?: string }> {
-    const attempts = opts?.attempts ?? 18;      // ~13.5s worst-case window (unchanged)
-    // Latency: mainnet/devnet commonly confirm in ~400-900ms. A fixed 750ms
-    // cadence surfaces a confirmed trade up to ~750ms later than necessary. Poll
-    // fast early (~250ms for the first several attempts), then back off to 750ms
-    // so the total window stays ≈13s. The fail-safe 'pending' return and the
-    // failed/confirmed honesty are UNCHANGED — this only tightens WHEN we look.
-    const fastIntervalMs = 250;
+    // CRITICAL: poll the endpoint the tx actually LANDED on. Flash V2 trades
+    // execute on the MagicBlock ER (flashtrade.magicblock.app) and confirm there
+    // in <1s; the signature only settles to L1 seconds later. Polling the L1
+    // connection for an ER tx finds NOTHING until that late settlement, so the
+    // loop used to burn the entire ~18s window and return a false 'pending' —
+    // the 18s "slow" trades. Poll the ER connection when we have one. On an ER,
+    // a `processed` status is TERMINAL (single sequencer, instant finality) — no
+    // firmer status is coming, so accepting it is correct, not premature. On L1
+    // we still require confirmed/finalized.
+    const conn = this.erConnection ?? this.l1Connection;
+    const isEr = FlashV2BuilderClient.isEphemeralRollup(conn.rpcEndpoint);
+    const attempts = opts?.attempts ?? 18;
+    // Poll fast early (the ER confirms sub-second), then back off. Total window
+    // stays ≈13s as a fail-safe for the rare slow case.
+    const fastIntervalMs = 200;
     const slowIntervalMs = opts?.intervalMs ?? 750;
-    const fastAttempts = 6;
+    const fastAttempts = 8;
     for (let i = 0; i < attempts; i++) {
+      this.lastConfirmAttempts = i + 1;
       try {
         // A just-submitted signature is in the RPC's recent-status cache;
-        // `searchTransactionHistory` forces an extra long-term-storage
-        // (Bigtable) lookup that adds latency to every poll for no benefit on a
-        // fresh tx. Use the fast recent-cache lookup for all but the final
-        // attempt, then enable history once as a safety net before giving up.
+        // `searchTransactionHistory` forces an extra long-term-storage lookup
+        // that adds latency per poll for no benefit on a fresh tx. Recent-cache
+        // for all but the final attempt, history once as a safety net.
         const searchTransactionHistory = i === attempts - 1;
-        const st = await this.l1Connection.getSignatureStatus(signature, { searchTransactionHistory });
+        const st = await conn.getSignatureStatus(signature, { searchTransactionHistory });
         const v = st?.value;
         if (v) {
           if (v.err) return { status: 'failed', onChainError: JSON.stringify(v.err) };
-          if (v.confirmationStatus === 'confirmed' || v.confirmationStatus === 'finalized') {
+          if (
+            v.confirmationStatus === 'confirmed' ||
+            v.confirmationStatus === 'finalized' ||
+            (isEr && v.confirmationStatus === 'processed')
+          ) {
             return { status: 'confirmed' };
           }
-          // 'processed' only → keep polling for a firmer (err-bearing or confirmed) status.
+          // L1 'processed' only → keep polling for a firmer status.
         }
       } catch {
         /* transient RPC error — keep trying, then fall through to fail-safe 'pending' */
@@ -809,8 +834,12 @@ export class FlashV2BuilderClient {
     // Signature of the most recently signed tx (set just before submit) so the
     // retry path can check whether the original already landed.
     let lastSignedSig: string | null = null;
+    const trace = process.env.MAGIC_TRACE === '1';
+    const T0 = Date.now();
+    let tBuild = T0, tSubmit = T0;
     const execute = async (): Promise<FlashV2BuilderResult> => {
       const response = await this.build(name, body);
+      tBuild = Date.now();
       const txBase64 = txBase64From(response);
       if (txBase64 === null || txBase64 === undefined) {
         return { previewOnly: true, response };
@@ -877,7 +906,32 @@ export class FlashV2BuilderClient {
       const signedTransactionBase64 = Buffer.from(raw).toString('base64');
       let signature: string;
       let rpc: string | undefined;
-      if (spec.route === 'trading') {
+      // LATENCY (the ~18s "slow" trades): BOTH flashapi's /submit-transaction AND
+      // the MagicBlock ER's sendTransaction hold their HTTP RESPONSE until the tx
+      // commits to L1 (~18s with a public L1 RPC) — even though the tx is actually
+      // submitted the instant the router receives the bytes, and the ER reports
+      // it 'processed' in <1s. The unlock: we ALREADY hold the signature locally
+      // (tx.signatures[0] === lastSignedSig); we don't need the blocking response
+      // to tell us. So FIRE the submit without awaiting its response, and confirm
+      // via getSignatureStatus (ER 'processed' in <1s). A submit that's rejected
+      // simply never confirms → fail-safe 'pending', never a false success, and
+      // we fire exactly once so there is no double-execute.
+      // Set MAGIC_FLASHAPI_SUBMIT=1 to force the old blocking path if ever needed.
+      const useDirectErSubmit =
+        spec.route === 'trading' && !!this.erConnection && process.env.MAGIC_FLASHAPI_SUBMIT !== '1';
+      if (useDirectErSubmit) {
+        if (!lastSignedSig) throw new FlashV2FieldError('could not derive signature from signed transaction');
+        signature = lastSignedSig;
+        rpc = this.erConnection!.rpcEndpoint;
+        void this.erConnection!.sendRawTransaction(raw, {
+          // ER preflight adds latency and the pre-sign balance check + on-chain
+          // confirm already guard correctness; skip it for the hot path.
+          skipPreflight: opts.skipPreflight ?? true,
+        }).catch(() => {
+          /* a rejected submit never confirms → the poll returns fail-safe
+             'pending'; swallow so it can't become an unhandled rejection */
+        });
+      } else if (spec.route === 'trading') {
         const submitted = await this.post('/transaction-builder/submit-transaction', {
           transactionBase64: signedTransactionBase64,
           ...(opts.skipPreflight !== undefined ? { skipPreflight: opts.skipPreflight } : {}),
@@ -910,6 +964,7 @@ export class FlashV2BuilderClient {
           reason: 'submit-time marker (pre-confirm)',
         });
       } catch { /* audit best-effort */ }
+      tSubmit = Date.now();
       // Confirm the tx actually LANDED before declaring success — a submit that
       // returns a signature can still revert on-chain (slippage / margin /
       // oracle / paused). Fail-safe: 'pending' when we can't confirm in the
@@ -917,10 +972,39 @@ export class FlashV2BuilderClient {
       // Trading route only: funds ops (deposit/withdraw) already render 'pending'
       // cards and run the authoritative verify-withdraw ATA check downstream, so
       // we don't perturb that flow with a second confirmation here.
+      //
+      // INSTANT MODE (opt-in, MAGIC_INSTANT=1): optimistic UI. Render the trade
+      // the instant it's fired ('pending') WITHOUT waiting for the confirm poll,
+      // and verify in the BACKGROUND — a reverted tx surfaces as a warning on the
+      // next prompt instead of blocking the card. Perceived latency drops to just
+      // build+sign+fire (~85ms). Default OFF: the honest confirm-before-success
+      // path (below) is unchanged unless the trader explicitly opts in.
+      const instant = process.env.MAGIC_INSTANT === '1' && spec.route === 'trading';
       const conf: { status: FlashV2Confirmation; onChainError?: string } =
-        spec.route === 'trading'
-          ? await this.confirmOnChain(signature, { attempts: opts.confirmAttempts, intervalMs: opts.confirmIntervalMs })
-          : { status: 'pending' };
+        instant
+          ? { status: 'pending' }
+          : spec.route === 'trading'
+            ? await this.confirmOnChain(signature, { attempts: opts.confirmAttempts, intervalMs: opts.confirmIntervalMs })
+            : { status: 'pending' };
+      if (instant) {
+        // Background verify: warn (never block) if the optimistically-rendered
+        // trade actually reverted on-chain.
+        void this.confirmOnChain(signature)
+          .then((c) => {
+            if (c.status === 'failed') {
+              process.stderr.write(`\n⚠  trade ${signature.slice(0, 8)}… reverted on-chain (${c.onChainError ?? 'unknown'}) — re-check your position\n`);
+            }
+          })
+          .catch(() => { /* background best-effort */ });
+      }
+      if (trace) {
+        const now = Date.now();
+        process.stderr.write(
+          `\n[MAGIC_TRACE] ${name}: build=${tBuild - T0}ms submit=${tSubmit - tBuild}ms ` +
+          `confirm=${now - tSubmit}ms (${this.lastConfirmAttempts} polls, ${conf.status}) ` +
+          `total=${now - T0}ms · confirmEndpoint=${(this.erConnection ?? this.l1Connection).rpcEndpoint}\n`,
+        );
+      }
       const auditResult =
         conf.status === 'confirmed' ? 'confirmed' : conf.status === 'failed' ? 'failed' : 'submitted';
       // Audit trail — records the REAL on-chain outcome, not a blanket 'confirmed'.
