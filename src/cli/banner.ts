@@ -144,25 +144,68 @@ const motionEnabled = (): boolean =>
  *
  * Falls back to the exact static `renderHero()` output whenever motion is off.
  */
-export async function animateHero(): Promise<void> {
-  const hero = await renderHero();
+/**
+ * Reveal multi-line text top-to-bottom with a per-line stagger — "ink" lines
+ * linger, blank/divider lines snap in. Pure sequential writes + a cursor guard;
+ * no in-place redraw, so it's safe on any terminal. Instant write when motion
+ * is off (agent/CI/pipe/no-color).
+ */
+async function revealLines(text: string, inkMs = 30, blankMs = 6): Promise<void> {
   const out = process.stdout;
   if (!motionEnabled()) {
-    out.write(hero);
+    out.write(text);
     return;
   }
-  const lines = hero.split('\n');
+  const lines = text.split('\n');
   const restore = (): void => { try { out.write('\x1b[?25h'); } catch { /* ignore */ } };
-  // Guarantee the cursor comes back even if the process is interrupted mid-reveal.
-  process.once('exit', restore);
+  process.once('exit', restore); // cursor comes back even if interrupted mid-reveal
   try {
-    out.write('\x1b[?25l'); // hide cursor during the draw-in
+    out.write('\x1b[?25l');
     for (let i = 0; i < lines.length; i++) {
       out.write(lines[i]);
       if (i < lines.length - 1) out.write('\n');
-      // Stagger the "ink" lines (figlet art + tagline); blanks/dividers snap in.
-      await sleep(lines[i].trim().length === 0 ? 6 : 30);
+      await sleep(lines[i].trim().length === 0 ? blankMs : inkMs);
     }
+  } finally {
+    restore();
+    process.removeListener('exit', restore);
+  }
+}
+
+export async function animateHero(): Promise<void> {
+  await revealLines(await renderHero());
+}
+
+/**
+ * Boot checklist — after the hero, walk the already-completed init steps
+ * (config, RPC, program) as spinner→checkmark rows, Vercel/Railway style. The
+ * work is real and already done; the brief spin just gives the start a sense of
+ * "coming online" rather than dumping a wall of text. In-place single-line
+ * updates only (`\r` + clear-line), never multi-line cursor math — safe on any
+ * emulator. Static (agent/CI/pipe/no-color) prints the checks instantly.
+ */
+export async function bootSequence(steps: Array<{ label: string; detail: string }>): Promise<void> {
+  const out = process.stdout;
+  const row = (mark: string, s: { label: string; detail: string }): string =>
+    `  ${mark}  ${c.primary(s.label.padEnd(9))}${c.muted(s.detail)}`;
+  if (!motionEnabled()) {
+    for (const s of steps) out.write(row(c.long('✓'), s) + '\n');
+    out.write('\n');
+    return;
+  }
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  const restore = (): void => { try { out.write('\x1b[?25h'); } catch { /* ignore */ } };
+  process.once('exit', restore);
+  try {
+    out.write('\x1b[?25l');
+    for (const s of steps) {
+      for (let f = 0; f < 5; f++) {
+        out.write('\r\x1b[2K' + row(c.cyan(frames[f % frames.length]), s));
+        await sleep(26);
+      }
+      out.write('\r\x1b[2K' + row(c.long('✓'), s) + '\n'); // resolve to a checkmark
+    }
+    out.write('\n');
   } finally {
     restore();
     process.removeListener('exit', restore);
@@ -208,6 +251,12 @@ export function renderSession(info: BannerInfo): string {
   lines.push(`  ${c.muted("Type")} ${c.cyan('help')} ${c.muted("for the full command list, or jump in:")} ${c.teal.bold('open SOL long 5 2')}`);
   lines.push('');
   return lines.join('\n');
+}
+
+/** Animated reveal of the ready-to-trade session panel (post wallet-connect),
+ *  so hero → boot → ready reads as one cohesive start. */
+export async function animateSession(info: BannerInfo): Promise<void> {
+  await revealLines(renderSession(info), 20, 5);
 }
 
 function stripScheme(url: string): string {
