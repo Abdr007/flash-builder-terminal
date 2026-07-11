@@ -113,6 +113,21 @@ export class SigningGuard {
     this.initAuditLog();
   }
 
+  /**
+   * True when ANY per-trade risk cap is active (collateral / position-size /
+   * leverage > 0). The sign boundary uses this to fail CLOSED: a size- or
+   * leverage-growing builder that can't be resolved into concrete
+   * `TradeLimitParams` is refused while caps are configured, rather than
+   * silently signing past a cap the operator set.
+   */
+  capsConfigured(): boolean {
+    return (
+      this.config.maxCollateralPerTrade > 0 ||
+      this.config.maxPositionSize > 0 ||
+      this.config.maxLeverage > 0
+    );
+  }
+
   /** Returns `{ allowed: true }` if the trade fits within configured limits. */
   checkTradeLimits(params: { collateral: number; leverage: number; sizeUsd: number; market: string }): TradeLimitCheck {
     const { collateral, leverage, sizeUsd } = params;

@@ -27,6 +27,7 @@ import {
   type FlashV2BuilderName,
   type FlashV2BuilderResult,
   type JsonObject,
+  type TradeLimitParams,
   uiAmount,
 } from '../client/flash-v2-builder.js';
 import { formatPrice, formatUsd, formatUsdExact } from '../utils/format.js';
@@ -505,12 +506,18 @@ async function signV2(
   name: FlashV2BuilderName,
   body: Record<string, unknown>,
   extraSigners: Keypair[] = [],
+  opts: { tradeLimits?: TradeLimitParams } = {},
 ): Promise<FlashV2BuilderResult> {
   const client = buildFlashV2Client(context);
   const owner = ownerKeypair(context);
   return client.signAndSubmit(name, body, [owner, ...extraSigners], {
     refreshOwner: owner.publicKey.toBase58(),
     retryExpiredBlockhash: true,
+    // Size/leverage-growing builders (increase / reverse / removeCollateral,
+    // and the auto-merge open→increase path) can't derive their resulting
+    // exposure from the request body — the caller computes it from the existing
+    // position and passes it here so MAX_* caps are enforced on the money path.
+    ...(opts.tradeLimits ? { tradeLimits: opts.tradeLimits } : {}),
   });
 }
 
@@ -1606,6 +1613,12 @@ export const magicOpen: ToolDefinition = {
     }
 
     if (existing) {
+      // Enforce MAX_* caps on the RESULTING exposure (existing + delta), not
+      // just the delta — an increase that pushes the position past a configured
+      // size/leverage cap must be rejected at the sign boundary.
+      const mergedSize = existing.sizeUsd + sizeUsd;
+      const mergedColl = existing.collateralUsd + collateral;
+      const mergedLev = mergedColl > 0 ? mergedSize / mergedColl : 0;
       const r = await signV2(context, 'increasePosition', {
         owner,
         marketSymbol: targetMarket,
@@ -1614,7 +1627,7 @@ export const magicOpen: ToolDefinition = {
         collateralAmountUi: uiAmount(collateral),
         collateralTokenSymbol: (params.collateralToken as string | undefined)?.toUpperCase() ?? 'USDC',
         slippagePercentage: slippageStr(params),
-      });
+      }, [], { tradeLimits: { collateral, leverage: mergedLev, sizeUsd: mergedSize, market: targetMarket } });
       if ('previewOnly' in r) {
         return { success: true, message: c.muted('  increase preview only — no transaction returned'), data: { response: r.response } };
       }
@@ -1876,13 +1889,35 @@ export const magicRemoveCollateral: ToolDefinition = {
     const tokenSymbol = (params.token as string | undefined)?.toUpperCase();
     const sym = String(params.market).toUpperCase();
     const sideStr = String(params.side);
+    const amount = params.amount as number;
+
+    // Removing collateral RAISES leverage — enforce MAX_LEVERAGE on the
+    // resulting position. Read the existing position to compute it; if the read
+    // fails while caps are configured, the sign boundary fails CLOSED (retry).
+    let removeLimits: TradeLimitParams | undefined;
+    try {
+      const client = buildFlashV2Client(context);
+      const existing = (await v2Positions(client, owner)).find(
+        (p) => p.market.toUpperCase() === sym && String(p.side).toLowerCase() === v2UiSide(sideStr),
+      );
+      if (existing) {
+        const newColl = existing.collateralUsd - amount;
+        removeLimits = {
+          collateral: newColl,
+          leverage: newColl > 0 ? existing.sizeUsd / newColl : Number.POSITIVE_INFINITY,
+          sizeUsd: existing.sizeUsd,
+          market: sym,
+        };
+      }
+    } catch { /* leave undefined — fail-closed backstop covers the capped case */ }
+
     const result = await signV2(context, 'removeCollateral', {
       owner,
       marketSymbol: sym,
       side: v2Side(sideStr),
-      withdrawAmountUsdUi: uiAmount(params.amount as number),
+      withdrawAmountUsdUi: uiAmount(amount),
       withdrawTokenSymbol: tokenSymbol ?? 'USDC',
-    });
+    }, [], removeLimits ? { tradeLimits: removeLimits } : {});
     if ('previewOnly' in result) {
       return { success: true, message: c.muted('  remove-collateral preview only — no transaction returned'), data: { response: result.response } };
     }
@@ -2603,7 +2638,9 @@ export const magicReverse: ToolDefinition = {
       side: v2Side(String(params.side)),
       leverage,
       slippagePercentage: slippageStr(params),
-    });
+      // Enforce MAX_* caps on the reversed position (collateral carries over,
+      // notional = carried collateral × requested leverage).
+    }, [], { tradeLimits: { collateral: inheritedCollateral, leverage, sizeUsd: inheritedCollateral * leverage, market: target } });
     if ('previewOnly' in result) {
       return { success: true, message: c.muted('  reverse preview only — no transaction returned'), data: { response: result.response } };
     }
@@ -2800,6 +2837,21 @@ export const magicIncrease: ToolDefinition = {
       );
     } catch { /* fall through — render whatever we have */ }
 
+    // Enforce MAX_* caps on the RESULTING position exposure. When the existing
+    // position can't be read, no tradeLimits is passed and the sign boundary
+    // fails CLOSED if the operator has caps configured (safe — retry).
+    let increaseLimits: TradeLimitParams | undefined;
+    if (existing) {
+      const mergedSize = existing.sizeUsd + addSize;
+      const mergedColl = existing.collateralUsd + addColl;
+      increaseLimits = {
+        collateral: addColl,
+        leverage: mergedColl > 0 ? mergedSize / mergedColl : 0,
+        sizeUsd: mergedSize,
+        market: sym,
+      };
+    }
+
     const r = await signV2(context, 'increasePosition', {
       owner,
       marketSymbol: sym,
@@ -2808,7 +2860,7 @@ export const magicIncrease: ToolDefinition = {
       collateralAmountUi: uiAmount(addColl),
       collateralTokenSymbol: 'USDC',
       slippagePercentage: slippageStr(params),
-    });
+    }, [], increaseLimits ? { tradeLimits: increaseLimits } : {});
     if ('previewOnly' in r) {
       return { success: true, message: c.muted('  increase preview only — no transaction returned'), data: { response: r.response } };
     }

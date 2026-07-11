@@ -453,7 +453,10 @@ function flexParseOpen(input: string): ParsedCommand | null {
   }
 
   if (!collateral || !Number.isFinite(collateral) || collateral <= 0) return null;
-  if (!leverage) leverage = 2; // default 2x
+  // Default 2x ONLY when no leverage was specified. An explicitly-typed invalid
+  // leverage (e.g. `0x`) must be REJECTED, not silently rewritten to 2x — a
+  // trade differing from what the user typed is a trust/correctness hazard.
+  if (leverage === null) leverage = 2;
   if (!Number.isFinite(leverage) || leverage < 1) return null;
 
   return {
@@ -475,6 +478,10 @@ export function interpretCommand(rawInput: string, _config?: MagicConfig): Parse
     .replace(/\s+/g, ' ')
     .trim();
   if (!sanitised) return null;
+  // Cap raw line length before the O(tokens × markets) fuzzy-match. A
+  // multi-megabyte paste would otherwise briefly block the single-threaded
+  // REPL. No real command approaches 2 KB; treat an oversized line as unknown.
+  if (sanitised.length > 2000) return null;
 
   const aliased = expandCommandAlias(sanitised);
   // tolerate `magic <verb>` prefix

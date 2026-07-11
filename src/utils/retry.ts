@@ -5,6 +5,7 @@
  */
 
 import { getLogger } from './logger.js';
+import { redactCommonSecrets } from '../security/redact-secrets.js';
 
 export interface RetryOptions {
   maxAttempts: number;
@@ -95,6 +96,11 @@ export async function withRetry<T>(fn: () => Promise<T>, label: string, opts: Pa
 }
 
 export function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  const msg = error instanceof Error ? error.message : String(error);
+  // Scrub credentials centrally. Many call sites do `console.log(getErrorMessage
+  // (e))`, which bypasses the logger's own scrubber — an SDK/RPC error string
+  // that embeds a path- or query-token RPC URL would otherwise leak a paid
+  // credential into stdout or a screenshot. Redaction only strips credential
+  // shapes, so error-type keywords used for control flow are untouched.
+  return redactCommonSecrets(msg);
 }

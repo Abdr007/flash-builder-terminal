@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { atomicWriteFileSync } from '../utils/atomic-write.js';
 
 const FLASH_DIR = join(homedir(), '.flash');
 const SESSION_FILE = join(FLASH_DIR, 'session.json');
@@ -32,7 +33,7 @@ export function saveSession(data: SessionData): void {
   if (data.lastWallet && typeof data.lastWallet === 'string') {
     safe.lastWallet = data.lastWallet;
   }
-  writeFileSync(SESSION_FILE, JSON.stringify(safe, null, 2) + '\n', { mode: 0o600 });
+  atomicWriteFileSync(SESSION_FILE, JSON.stringify(safe, null, 2) + '\n', 0o600);
 }
 
 export function updateLastWallet(walletName: string): void {

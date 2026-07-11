@@ -11,20 +11,47 @@ export function safeEnvNumber(
   fallback: number,
   opts?: { min?: number; max?: number },
 ): number {
+  // Fail LOUD on out-of-range values for BOUNDED settings — and validate the
+  // fallback too, not just the env var. The fallback is frequently sourced from
+  // config.json (e.g. `file.max_leverage ?? 0`), which is a semi-trusted,
+  // hand-editable file. A silent clamp or an unchecked fallback is exactly how a
+  // mistyped cap (`"max_leverage": -1`) or a non-number quietly turned the guard
+  // OFF — the `> 0` gate reads a negative / NaN as "disabled". Bounding only the
+  // env path (as before) left the config path fail-OPEN.
+  const validate = (n: number, source: string): number => {
+    if (!Number.isFinite(n)) {
+      throw new Error(`${source} value "${n}" is not a finite number.`);
+    }
+    if (opts?.min !== undefined && n < opts.min) {
+      throw new Error(`${source}=${n} is below the minimum ${opts.min}.`);
+    }
+    if (opts?.max !== undefined && n > opts.max) {
+      throw new Error(`${source}=${n} is above the maximum ${opts.max}.`);
+    }
+    return n;
+  };
   const raw = process.env[key];
-  if (raw === undefined || raw === null || raw === '') return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return fallback;
-  // Fail LOUD on out-of-range values for bounded settings. A silent clamp or
-  // fallback is how a mistyped cap (e.g. MAX_LEVERAGE=-1) quietly turned the
-  // guard OFF — the `> 0` gate reads a negative as "disabled".
-  if (opts?.min !== undefined && n < opts.min) {
-    throw new Error(`${key}=${raw} is below the minimum ${opts.min}.`);
+  let candidate: number;
+  let source: string;
+  if (raw === undefined || raw === null || raw === '') {
+    // No env override → use the fallback (may carry an untrusted config.json value).
+    candidate = Number(fallback);
+    source = `${key} (config.json)`;
+  } else {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) {
+      // Garbage env value → ignore it and use the fallback (lenient, unchanged),
+      // but the fallback is still validated below when the setting is bounded.
+      candidate = Number(fallback);
+      source = `${key} (config.json)`;
+    } else {
+      candidate = n;
+      source = key;
+    }
   }
-  if (opts?.max !== undefined && n > opts.max) {
-    throw new Error(`${key}=${raw} is above the maximum ${opts.max}.`);
-  }
-  return n;
+  // Only bounded settings (opts present) are validated — this is where a bad
+  // value silently disables a safety cap. Unbounded settings keep prior leniency.
+  return opts ? validate(candidate, source) : candidate;
 }
 
 export function safeEnvBool(key: string, fallback: boolean): boolean {

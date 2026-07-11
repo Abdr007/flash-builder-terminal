@@ -2876,15 +2876,29 @@ export class MagicTradeClient {
       if ((s as Keypair).secretKey) signers.push(s as Keypair);
     }
 
-    // Auto-retry on stale blockhash OR on "already processed" — both indicate
-    // a stale cached blockhash. "already processed" specifically happens when
-    // the user submits a logically-identical tx within the same blockhash
-    // window: the signature is identical, so the network rejects the dup. A
-    // fresh blockhash makes it a new signature.
-    const isRetryable = (err: unknown): boolean => {
-      const msg = (err as { message?: string }).message ?? '';
-      return /blockhash not found|already been processed|already processed/i.test(msg);
-    };
+    // Retry semantics are SPLIT by what the error proves about on-chain state:
+    //
+    //  - "blockhash not found": the tx was NEVER accepted (its blockhash is
+    //    unknown to the cluster) → it definitively did not land → safe to evict
+    //    the cached blockhash and re-sign.
+    //
+    //  - "already (been) processed": the network ALREADY accepted this exact
+    //    signature → the tx very likely LANDED. Re-signing with a fresh
+    //    blockhash produces a DISTINCT signature that executes the op a SECOND
+    //    time. `openPosition` is dup-guarded on-chain, but the additive ops
+    //    (increasePositionSize / addCollateral / decreasePosition) are NOT — a
+    //    resubmit there double-spends the user's collateral. So we FAIL CLOSED:
+    //    do not resubmit; surface a clear error and let the user verify state.
+    const isStaleBlockhash = (err: unknown): boolean =>
+      /blockhash not found/i.test((err as { message?: string }).message ?? '');
+    const isAlreadyProcessed = (err: unknown): boolean =>
+      /already been processed|already processed/i.test((err as { message?: string }).message ?? '');
+    const alreadyProcessedError = (): Error =>
+      new Error(
+        `${context}: transaction was already submitted (network reports "already processed"). ` +
+          `Not resubmitting — a fresh blockhash would create a second, double-executing transaction. ` +
+          `Check your portfolio to confirm whether it landed before retrying.`,
+      );
 
     if (this.fastConfirm) {
       // Submit-and-return: the SDK's skipConfirm returns the signature as soon
@@ -2904,8 +2918,9 @@ export class MagicTradeClient {
         this.reads.bust('markets:');
         return sig;
       } catch (err) {
-        if (!isRetryable(err)) throw err;
-        log.warn('magic-client', `${context}: stale blockhash / dup → evicting cache + retry`);
+        if (isAlreadyProcessed(err)) throw alreadyProcessedError();
+        if (!isStaleBlockhash(err)) throw err;
+        log.warn('magic-client', `${context}: stale blockhash → evicting cache + retry`);
         this.blockhashCacheRef.ref = null;
         const sig = await this.sdk.sendErTransaction(ixs, signers, { skipConfirm: true });
         this.pollErTxBackground(sig, context);
@@ -2926,7 +2941,8 @@ export class MagicTradeClient {
       this.reads.bust('markets:');
       return result.signature;
     } catch (err) {
-      if (!isRetryable(err)) throw err;
+      if (isAlreadyProcessed(err)) throw alreadyProcessedError();
+      if (!isStaleBlockhash(err)) throw err;
       this.blockhashCacheRef.ref = null;
       const result = await this.sdk.sendAndConfirmErTransaction(ixs, signers, {
         pollTimeoutMs: 10_000,

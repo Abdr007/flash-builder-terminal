@@ -87,6 +87,12 @@ function printHelp(): void {
     row('resume', 're-enable signing'),
     `  ${c.faint('Every market order carries a slippage cap; trades preview before signing.')}`,
 
+    sec('AI ASSIST') + `   ${c.faint('optional — natural language falls back to a typed command')}`,
+    row('ai', 'intent-layer status: model · credit budget · cache · fallbacks'),
+    row('magic --no-ai', 'launch with the AI intent layer off (regex-only)'),
+    `  ${c.faint('Set ANTHROPIC_API_KEY to enable. AI only interprets — every order still goes')}`,
+    `  ${c.faint('through the same validation + a mandatory confirm; off = 100% still tradeable.')}`,
+
     sec('AGENT MODE') + `   ${c.faint('https://no-dna.org')}`,
     row('NO_DNA=1 magic <command>', 'JSON to stdout, errors to stderr, no prompts'),
     `  ${c.muted('SDK  ')}${c.teal("import { createMagicSession } from 'flash-builder-terminal/sdk'")}`,

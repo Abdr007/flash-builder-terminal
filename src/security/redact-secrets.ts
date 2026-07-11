@@ -32,5 +32,20 @@ export function redactCommonSecrets(text: string): string {
     .replace(/bot\d{6,}:[A-Za-z0-9_-]{20,}/g, 'bot<token>')
     .replace(/\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g, '<bot-token>')
     // Embedded URL credentials (userinfo).
-    .replace(/(https?:\/\/)([^/@\s]+)@/gi, (_m, scheme: string) => `${scheme}***@`);
+    .replace(/(https?:\/\/)([^/@\s]+)@/gi, (_m, scheme: string) => `${scheme}***@`)
+    // RPC providers that embed the API token as a PATH segment (not a query
+    // param): QuickNode (*.quiknode.pro/<token>/), Triton (*.rpcpool.com/<token>),
+    // Alchemy (*.g.alchemy.com/v2/<token>), Blast (*.blastapi.io/<token>). The
+    // generic query-param pass above misses these. Keep the host so the log still
+    // identifies the provider; strip the token. Targeted per-host so Solscan tx
+    // links (kept intact for the audit trail) are never touched.
+    .replace(/(\/\/[^/\s"']*\.quiknode\.pro\/)[A-Za-z0-9._~-]{8,}/gi, '$1***')
+    .replace(/(\/\/[^/\s"']*\.rpcpool\.com\/)[A-Za-z0-9._~-]{8,}/gi, '$1***')
+    .replace(/(\.g\.alchemy\.com\/v2\/)[A-Za-z0-9._~-]{8,}/gi, '$1***')
+    .replace(/(\.blastapi\.io\/)[A-Za-z0-9._~-]{8,}/gi, '$1***')
+    // Solana JSON keypair byte array: [12,34,…] — a long run of small ints in
+    // brackets can only be key material. Redact unconditionally (the labelled
+    // base58 redaction elsewhere deliberately preserves 88-char tx signatures;
+    // a bare byte array has no such collision).
+    .replace(/\[\s*(?:\d{1,3}\s*,\s*){20,}\d{1,3}\s*\]/g, '[<redacted-keypair-bytes>]');
 }

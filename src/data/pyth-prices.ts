@@ -15,6 +15,7 @@
  */
 
 import { setTimeout as wait } from 'timers/promises';
+import { readJsonCapped } from '../utils/fetch-json.js';
 
 const HERMES = 'https://hermes.pyth.network';
 const BENCHMARKS = 'https://benchmarks.pyth.network';
@@ -429,7 +430,7 @@ export class PythPriceService {
         signal: AbortSignal.timeout(3_000),
       });
       if (!res.ok) return { open: true, staleSeconds: -1 };
-      const payload = (await res.json()) as { parsed?: Array<{ price: { publish_time?: number } }> };
+      const payload = (await readJsonCapped(res)) as { parsed?: Array<{ price: { publish_time?: number } }> };
       const pt = payload.parsed?.[0]?.price?.publish_time ?? 0;
       const nowSec = Math.floor(Date.now() / 1_000);
       const staleSeconds = pt > 0 ? Math.max(0, nowSec - pt) : -1;
@@ -458,7 +459,7 @@ export class PythPriceService {
           signal: AbortSignal.timeout(10_000),
         });
         if (!res.ok) throw new Error(`feed registry: ${res.status}`);
-        const feeds = (await res.json()) as HermesFeed[];
+        const feeds = (await readJsonCapped(res)) as HermesFeed[];
         // Defense-in-depth bound: Hermes returns ~500 feeds today. A hostile
         // or misbehaving Hermes response could feed an unbounded list which
         // would balloon the registry maps; clip at a safe ceiling.
@@ -501,7 +502,7 @@ export class PythPriceService {
     const url = `${HERMES}/v2/updates/price/latest?` + ids.map((id) => `ids[]=${id}`).join('&');
     const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
     if (!res.ok) throw new Error(`hermes prices: ${res.status}`);
-    const payload = (await res.json()) as { parsed?: Array<{ id: string; price: HermesPriceUpdate['price'] & { publish_time?: number } }> };
+    const payload = (await readJsonCapped(res)) as { parsed?: Array<{ id: string; price: HermesPriceUpdate['price'] & { publish_time?: number } }> };
 
     const out = new Map<string, { price: number; publishTime: number }>();
     for (const p of payload.parsed ?? []) {
@@ -538,7 +539,7 @@ export class PythPriceService {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
       if (!res.ok) return null;
-      const data = (await res.json()) as BenchmarkResponse;
+      const data = (await readJsonCapped(res)) as BenchmarkResponse;
       if (data.s !== 'ok' || !data.c?.length || !data.t?.length) return null;
       // Pick the close of the candle whose timestamp is closest to but ≤ now-24h.
       const target = now - ONE_DAY_S;

@@ -24,6 +24,8 @@ import { initLogger, getLogger, LogLevel } from '../utils/logger.js';
 import { getErrorMessage } from '../utils/retry.js';
 import { renderSession } from './banner.js';
 import { interpretCommand, configureSymbols } from './interpreter.js';
+import { loadAiConfig } from '../ai/config.js';
+import { IntentResolver, type ResolveResult } from '../ai/interpret.js';
 import { c, latencyPill, BRAND_NAME_UPPER } from './magic-theme.js';
 import { recordMagicAction } from './magic-session-stats.js';
 import { homedir } from 'os';
@@ -308,7 +310,7 @@ function nearestVerb(input: string): string | null {
   const candidates = new Set<string>([
     ...Object.keys(VERB_ALIASES),
     'help', 'exit', 'quit', 'clear', 'wallet', 'rpc', 'monitor', 'watch',
-    'kill', 'resume', 'init', 'env', 'feedback',
+    'kill', 'resume', 'init', 'env', 'feedback', 'ai',
   ]);
   let best: { verb: string; d: number } | null = null;
   for (const v of candidates) {
@@ -779,6 +781,7 @@ const HELP_GROUPS: HelpGroup[] = [
       { cmd: 'perf',                           hint: 'Read-cache hit rate + RPC latency telemetry' },
       { cmd: 'kill / resume',                  hint: 'Persistent kill switch — refuse / re-allow signing' },
       { cmd: 'feedback "msg"',                 hint: 'Save a local note + env fingerprint to ~/.magic/feedback.jsonl' },
+      { cmd: 'ai',                             hint: 'Intent-layer status: model, credit budget, cache, fallbacks (ai on/off to toggle)' },
     ],
   },
   {
@@ -960,11 +963,32 @@ export class MagicTerminal {
    */
   private lastFailed = false;
 
+  /**
+   * True once the interactive REPL loop is running (`start()`), false in the
+   * one-shot (`runOnce`) / agent path. Gates the guided `init` onboarding —
+   * chaining setup + deposit prompts only makes sense in a live session, never
+   * in a run-and-exit `magic init`.
+   */
+  private inRepl = false;
+
+  /**
+   * Tiered intent resolver (deterministic-first; AI is advisory-only and
+   * re-parsed through the same `parseCommand` firewall). Disabled entirely in
+   * agent mode (`NO_DNA`) and under `--no-ai` so the trading path never depends
+   * on AI. See src/ai/interpret.ts.
+   */
+  private readonly aiResolver: IntentResolver;
+
   constructor(config: MagicConfig, walletManager: WalletManager) {
     this.config = config;
     this.walletManager = walletManager;
     this.engine = getEngine();
     this.context = { walletManager, config };
+    // AI is off for agents (NO_DNA) and under `--no-ai`; otherwise it activates
+    // only when ANTHROPIC_API_KEY is set. The resolver is safe to build either
+    // way — a disabled resolver simply always returns the deterministic result.
+    const noAi = process.argv.includes('--no-ai') || !!process.env.NO_DNA;
+    this.aiResolver = new IntentResolver(loadAiConfig(noAi));
     this.rl = createInterface({
       input: process.stdin,
       output: process.stdout,
@@ -981,7 +1005,7 @@ export class MagicTerminal {
         const verbs = new Set<string>([
           ...Object.keys(VERB_ALIASES),
           'help', 'exit', 'quit', 'clear', 'wallet', 'rpc', 'monitor', 'watch',
-          'kill', 'resume', 'init', 'env', 'feedback',
+          'kill', 'resume', 'init', 'env', 'feedback', 'ai',
         ]);
         const matches = Array.from(verbs)
           .filter((v) => v.startsWith(trimmed.toLowerCase()))
@@ -1005,7 +1029,14 @@ export class MagicTerminal {
     try {
       if (isKilled()) killBadge = `${c.short.bold('●KILL ')}`;
     } catch { /* no badge */ }
-    return `${killBadge}${c.teal.bold('flash')} ${c.muted('›')} `;
+    // Persistent, never-hidden regex-only indicator: shown only when AI WAS
+    // available (key present, not --no-ai) but is currently suppressed
+    // (session-off or budget cap reached) — so the user always knows.
+    let aiBadge = '';
+    try {
+      if (this.aiResolver?.regexOnly) aiBadge = `${c.faint('⌁regex ')}`;
+    } catch { /* no badge */ }
+    return `${killBadge}${aiBadge}${c.teal.bold('flash')} ${c.muted('›')} `;
   }
 
   /**
@@ -1013,6 +1044,7 @@ export class MagicTerminal {
    * handlers, then enter the readline loop.
    */
   async start(): Promise<void> {
+    this.inRepl = true;
     initLogger({
       logFile: join(homedir(), '.magic', 'magic.log'),
       level: LogLevel.Info,
@@ -1195,9 +1227,17 @@ export class MagicTerminal {
    *
    * Returns true on yes; false on no / timeout / cancellation.
    */
-  private async confirmTrade(parsed: ParsedCommand): Promise<boolean> {
+  private async confirmTrade(parsed: ParsedCommand, aiInterpreted = false): Promise<boolean> {
     const { renderCard, marketHeader, c: theme, DIAMOND } = await import('./magic-theme.js');
     void theme; // keep `c` (the file-level alias) as the in-method palette
+
+    // AI-interpreted orders get an explicit "verify these values" banner above
+    // the card — the human is the last line of defence against a mis-parse.
+    if (aiInterpreted) {
+      process.stdout.write(
+        `  ${c.warn('⚠ AI-interpreted order')} ${c.muted('— verify the values below before confirming.')}\n`,
+      );
+    }
 
     const fmtUsd = (v: number): string =>
       `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -1550,6 +1590,12 @@ export class MagicTerminal {
       await this.handleInit(tokens);
       return;
     }
+    // `ai` — intent-layer status/telemetry + session on/off toggle. Read-only
+    // control surface; it never touches the trading path.
+    if (lower === 'ai' || lower === 'ai stats' || lower === 'ai on' || lower === 'ai off') {
+      this.handleAiCommand(lower);
+      return;
+    }
     // `env` — show where the env file lives, what's currently set (masked),
     // and where the config.json lives.
     if (lower === 'env' || lower === 'env show') {
@@ -1603,9 +1649,15 @@ export class MagicTerminal {
       return;
     }
 
-    let parsed: ParsedCommand | null;
+    // ── Tiered intent resolution ────────────────────────────────────────
+    // Deterministic parse first (Tier 0/1). Only on a deterministic miss, for
+    // a plausible trade phrasing, with AI enabled + in-budget + reachable, is
+    // the model consulted (Tier 2) — and its output is a mere command STRING
+    // re-parsed through THIS SAME parseCommand. AI never yields a command that
+    // didn't pass deterministic validation. See src/ai/interpret.ts.
+    let resolution: ResolveResult;
     try {
-      parsed = parseCommand(line, this.config);
+      resolution = await this.aiResolver.resolve(line, (l) => parseCommand(l, this.config));
     } catch (err) {
       // Ambiguous fuzzy match — show the candidates so the user can retype
       // unambiguously. Better to refuse than to route a trade to the wrong
@@ -1624,6 +1676,7 @@ export class MagicTerminal {
       }
       return;
     }
+    const parsed: ParsedCommand | null = resolution.command;
     if (!parsed) {
       this.lastFailed = true;
       const firstTok = line.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? '';
@@ -1635,24 +1688,39 @@ export class MagicTerminal {
           code: 'UNKNOWN_COMMAND',
           message: `unknown command: ${line}`,
           ...(suggestion ? { suggestion } : {}),
+          ...(resolution.degraded && resolution.fallbackReason ? { aiFallback: resolution.fallbackReason } : {}),
         }) + '\n');
       } else {
         const hint = suggestion
           ? ` ${c.muted('— did you mean')} ${c.teal.bold(suggestion)}${c.muted('?')}`
           : ` ${c.muted("type 'help' to see commands")}`;
         process.stdout.write(`${chalk.red('unknown command: ')}${line}${hint}\n`);
+        // Visible, non-hidden signal that AI understanding was unavailable.
+        if (resolution.degraded && resolution.fallbackReason) {
+          process.stdout.write(`  ${c.faint(`(regex-only: ${resolution.fallbackReason} — plain commands still work; try 'help')`)}\n`);
+        }
       }
       return;
+    }
+    // AI-interpreted commands are shown verbatim and ALWAYS require an explicit
+    // confirm (below) so a mis-parse is caught by the human, not trusted.
+    if (resolution.aiInterpreted && !process.env.NO_DNA) {
+      process.stdout.write(
+        `  ${c.warn('◆ AI-interpreted')} ${c.faint(`"${line}"`)} ${c.muted('→')} ${c.teal.bold(resolution.aiSource ?? '')}\n`,
+      );
     }
 
     // Pre-sign confirmation gate. When `MAGIC_AUTO_CONFIRM=false`, render a
     // one-shot preview of money-touching commands and require explicit `y`
-    // before dispatch. Default-on (`MAGIC_AUTO_CONFIRM=true`) preserves the
-    // fast trading flow this terminal targets, but a power user trading from
+    // before dispatch. The default is `false` (confirm gate ON); a power user
+    // can set `MAGIC_AUTO_CONFIRM=true` to preserve the fast trading flow, but from
     // a shared host or via paste is one env var away from a real preview step.
     const needsSigningConfirm =
       SIGNING_VERBS.has(parsed.alias) && !(parsed.alias === 'builder' && parsed.params.sign !== true);
-    if (!this.config.autoConfirm && needsSigningConfirm) {
+    // An AI-interpreted order is confirmed even when autoConfirm is on — the
+    // human must verify the interpreted values before anything signs.
+    const forceConfirm = resolution.aiInterpreted;
+    if ((!this.config.autoConfirm || forceConfirm) && needsSigningConfirm) {
       // NO_DNA agent mode: the spec says "never prompt — fail or use sensible
       // defaults". With autoConfirm=false, "fail" is the only safe default
       // (the alternative would be auto-signing without preview, which is
@@ -1671,7 +1739,7 @@ export class MagicTerminal {
         process.stderr.write(errLine + '\n');
         return;
       }
-      const proceed = await this.confirmTrade(parsed);
+      const proceed = await this.confirmTrade(parsed, resolution.aiInterpreted);
       if (!proceed) {
         this.lastFailed = true;
         process.stdout.write(c.muted('  cancelled.\n'));
@@ -2218,12 +2286,146 @@ export class MagicTerminal {
     const networkFlag = argv.includes('--devnet') ? 'devnet' as const : 'mainnet-beta' as const;
 
     const { runInitWizard } = await import('./init-wizard.js');
-    const result = await runInitWizard({ quick, network: networkFlag });
+    // Reuse THIS terminal's readline. Opening a second interface on stdin
+    // (the wizard's old behaviour) makes both echo every keystroke, so the
+    // user sees `hhttttppss::…`. Masking hides the API key in the pasted URL.
+    const result = await runInitWizard({
+      quick,
+      network: networkFlag,
+      rl: this.rl,
+      maskRpc: !quick,
+    });
     if (result.cancelled) {
       this.lastFailed = false;
       process.stdout.write(c.muted('  init cancelled — no changes written\n'));
+      return;
     }
+
+    // Guided continuation: only in the live REPL. A one-shot `magic init`
+    // writes the file and exits; agents (NO_DNA) returned above. `--quick`
+    // opted out of prompts entirely, so we honour that and stop here too.
+    if (!this.inRepl || quick) {
+      void cfgPath;
+      return;
+    }
+
+    await this.runGuidedOnboarding(result.l1RpcUrl);
     void cfgPath; // referenced only by NO_DNA branch; kept for future re-use.
+  }
+
+  /**
+   * The "people do it like this" tail of `init`: now that the .env is written,
+   * walk the user straight into a tradable state without a restart —
+   *
+   *   1. Hot-swap the freshly-chosen RPC into the running session (reuses the
+   *      tested `rpc set` path: switchTo + persist + rebuild cached clients).
+   *   2. Offer on-chain `setup` (UDL + basket + delegate; idempotent).
+   *   3. Offer a first `deposit` to fund the basket.
+   *
+   * Steps 2 & 3 route through the normal `handle()` pipeline, so the standard
+   * confirm gate + spinner + journaling all still apply — nothing signs
+   * silently just because it was reached via onboarding.
+   */
+  private async runGuidedOnboarding(l1RpcUrl: string): Promise<void> {
+    // 1 ─ Live RPC swap so setup/deposit below hit the paid endpoint.
+    process.stdout.write('\n');
+    try {
+      await this.handleRpcSubcommand(`rpc set ${l1RpcUrl}`);
+    } catch (err) {
+      process.stdout.write(
+        `  ${c.warn('⚠')} ${c.muted('could not hot-swap RPC — restart magic to pick it up')} ${c.faint(`(${getErrorMessage(err)})`)}\n`,
+      );
+    }
+
+    // 2 ─ On-chain setup.
+    process.stdout.write('\n');
+    const doSetup = await this.promptYesNo(
+      `  ${c.teal.bold('Run on-chain setup now?')} ${c.muted('— UDL + basket + delegate')}`,
+      true,
+    );
+    if (doSetup) {
+      await this.handle('setup');
+    } else {
+      process.stdout.write(`  ${c.muted('skipped — run')} ${c.teal.bold('setup')} ${c.muted('when ready.')}\n`);
+    }
+
+    // 3 ─ Fund the basket.
+    process.stdout.write('\n');
+    const amt = await this.promptAmount(
+      `  ${c.teal.bold('Deposit USDC now?')} ${c.muted('— enter an amount, or')} ${c.cyan('[enter]')} ${c.muted('to skip')}`,
+    );
+    if (amt !== null) {
+      await this.handle(`deposit USDC ${amt}`);
+    } else {
+      process.stdout.write(`  ${c.muted('skipped — run')} ${c.teal.bold('deposit USDC <amount>')} ${c.muted('when ready.')}\n`);
+    }
+
+    process.stdout.write(
+      `\n  ${c.teal.bold('You’re set.')} ${c.muted('Type')} ${c.teal.bold('help')} ${c.muted('or jump in:')} ${c.teal.bold('long SOL 5 2x')}\n`,
+    );
+  }
+
+  /**
+   * `ai` / `ai stats` / `ai on` / `ai off` — the intent layer's observability +
+   * session toggle. Makes credit spend, cache hit-rate, and fallbacks visible
+   * rather than a black box. Never signs, never trades.
+   */
+  private handleAiCommand(lower: string): void {
+    if (lower === 'ai on' || lower === 'ai off') {
+      const off = lower === 'ai off';
+      this.aiResolver.setSessionDisabled(off);
+      const m = this.aiResolver.mode();
+      process.stdout.write(
+        off
+          ? `  ${c.warn('●')} ${c.muted('AI intent layer disabled this session — regex-only. Type')} ${c.teal.bold('ai on')} ${c.muted('to re-enable.')}\n`
+          : m.active
+            ? `  ${c.long('●')} ${c.muted('AI intent layer enabled.')}\n`
+            : `  ${c.warn('●')} ${c.muted(`AI still inactive: ${m.reason ?? 'unavailable'}.`)}\n`,
+      );
+      return;
+    }
+
+    const s = this.aiResolver.stats();
+    const money = (v: number): string => `$${v.toFixed(4)}`;
+    const tok = (v: number): string => (v === Infinity ? '∞' : v.toLocaleString('en-US'));
+    const dot = s.mode.active ? c.long('●') : c.warn('●');
+    process.stdout.write('\n');
+    process.stdout.write(`  ${dot} ${c.teal.bold('AI intent layer')}  ${s.mode.active ? c.long('active') : c.short('regex-only')}${s.mode.reason ? ` ${c.faint(`(${s.mode.reason})`)}` : ''}\n`);
+    process.stdout.write(`  ${c.muted('model')}        ${c.cyan(s.model)}  ${c.faint(`· threshold ${s.confidenceThreshold}`)}\n`);
+    process.stdout.write(`  ${c.muted('session')}      ${c.primary(`${s.budget.session.calls} calls`)}  ${c.faint(`${tok(s.budget.session.tokens)} tok · ${money(s.budget.session.costUsd)} · ${tok(s.budget.session.remainingTokens)} left`)}\n`);
+    process.stdout.write(`  ${c.muted('today')}        ${c.primary(`${s.budget.day.calls} calls`)}  ${c.faint(`${tok(s.budget.day.tokens)} tok · ${money(s.budget.day.costUsd)} · ${tok(s.budget.day.remainingTokens)} left`)}\n`);
+    process.stdout.write(`  ${c.muted('cache')}        ${c.primary(`${(s.cache.hitRate * 100).toFixed(0)}% hit`)}  ${c.faint(`${s.cache.hits}/${s.cache.hits + s.cache.misses} · ${s.cache.size} entries`)}\n`);
+    process.stdout.write(`  ${c.muted('fallbacks')}    ${c.primary(String(s.fallbacks))}  ${c.faint('(deterministic-only resolutions after a miss)')}\n`);
+    process.stdout.write(`  ${c.faint('toggle with')} ${c.teal.bold('ai off')} ${c.faint('/')} ${c.teal.bold('ai on')}\n`);
+    process.stdout.write('\n');
+  }
+
+  /** Y/N confirm on the REPL's own readline. Empty input takes `defaultYes`. */
+  private promptYesNo(query: string, defaultYes: boolean): Promise<boolean> {
+    const suffix = defaultYes ? c.muted(' [Y/n] ') : c.muted(' [y/N] ');
+    return new Promise((resolve) => {
+      this.rl.question(`${query}${suffix}`, (a) => {
+        const t = (a ?? '').trim().toLowerCase();
+        if (t === '') return resolve(defaultYes);
+        resolve(/^y(es)?$/.test(t));
+      });
+    });
+  }
+
+  /**
+   * Prompt for a positive USDC amount on the REPL's readline. Returns the
+   * parsed number, or `null` for empty / non-positive / unparseable input
+   * (all of which mean "skip the deposit").
+   */
+  private promptAmount(query: string): Promise<number | null> {
+    return new Promise((resolve) => {
+      this.rl.question(`${query} `, (a) => {
+        const t = (a ?? '').trim().replace(/^\$/, '').replace(/[,_\s]/g, '');
+        if (t === '') return resolve(null);
+        const n = Number(t);
+        resolve(Number.isFinite(n) && n > 0 ? n : null);
+      });
+    });
   }
 
   /**

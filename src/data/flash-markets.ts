@@ -14,6 +14,9 @@
  *                     split Long/Short  (sizeUsd is micro-USD → /1e6)
  */
 
+import { readJsonCapped } from '../utils/fetch-json.js';
+import { validateRpcUrl } from '../config/index.js';
+
 const DEFAULT_URL = 'https://flashapi.trade';
 // Static maps (symbol↔mint↔custody) rarely change → refresh every 5 min.
 const STATIC_TTL_MS = 5 * 60_000;
@@ -73,7 +76,9 @@ export class FlashMarketService {
   private oiBackoffUntil = 0;
 
   constructor(baseUrl?: string) {
-    this.baseUrl = (baseUrl ?? process.env.MAGIC_FLASH_API_URL ?? DEFAULT_URL).replace(/\/+$/, '');
+    // Validate (https-only, no creds, no private/IMDS hosts) — intrinsic, not
+    // reliant on boot config also validating MAGIC_FLASH_API_URL.
+    this.baseUrl = validateRpcUrl(baseUrl ?? process.env.MAGIC_FLASH_API_URL ?? DEFAULT_URL, 'MAGIC_FLASH_API_URL').replace(/\/+$/, '');
   }
 
   /** Milliseconds since the last successful OI fetch (Infinity if never). */
@@ -222,7 +227,7 @@ export class FlashMarketService {
       signal: AbortSignal.timeout(5_000),
     });
     if (!res.ok) throw new Error(`flash-markets ${path}: ${res.status}`);
-    return res.json();
+    return readJsonCapped(res);
   }
 }
 
