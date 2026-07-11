@@ -478,6 +478,10 @@ export function interpretCommand(rawInput: string, _config?: MagicConfig): Parse
     .replace(/\s+/g, ' ')
     .trim();
   if (!sanitised) return null;
+  // Cap raw line length before the O(tokens × markets) fuzzy-match. A
+  // multi-megabyte paste would otherwise briefly block the single-threaded
+  // REPL. No real command approaches 2 KB; treat an oversized line as unknown.
+  if (sanitised.length > 2000) return null;
 
   const aliased = expandCommandAlias(sanitised);
   // tolerate `magic <verb>` prefix

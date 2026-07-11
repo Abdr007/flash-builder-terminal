@@ -42,5 +42,10 @@ export function redactCommonSecrets(text: string): string {
     .replace(/(\/\/[^/\s"']*\.quiknode\.pro\/)[A-Za-z0-9._~-]{8,}/gi, '$1***')
     .replace(/(\/\/[^/\s"']*\.rpcpool\.com\/)[A-Za-z0-9._~-]{8,}/gi, '$1***')
     .replace(/(\.g\.alchemy\.com\/v2\/)[A-Za-z0-9._~-]{8,}/gi, '$1***')
-    .replace(/(\.blastapi\.io\/)[A-Za-z0-9._~-]{8,}/gi, '$1***');
+    .replace(/(\.blastapi\.io\/)[A-Za-z0-9._~-]{8,}/gi, '$1***')
+    // Solana JSON keypair byte array: [12,34,…] — a long run of small ints in
+    // brackets can only be key material. Redact unconditionally (the labelled
+    // base58 redaction elsewhere deliberately preserves 88-char tx signatures;
+    // a bare byte array has no such collision).
+    .replace(/\[\s*(?:\d{1,3}\s*,\s*){20,}\d{1,3}\s*\]/g, '[<redacted-keypair-bytes>]');
 }

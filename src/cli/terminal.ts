@@ -1712,8 +1712,8 @@ export class MagicTerminal {
 
     // Pre-sign confirmation gate. When `MAGIC_AUTO_CONFIRM=false`, render a
     // one-shot preview of money-touching commands and require explicit `y`
-    // before dispatch. Default-on (`MAGIC_AUTO_CONFIRM=true`) preserves the
-    // fast trading flow this terminal targets, but a power user trading from
+    // before dispatch. The default is `false` (confirm gate ON); a power user
+    // can set `MAGIC_AUTO_CONFIRM=true` to preserve the fast trading flow, but from
     // a shared host or via paste is one env var away from a real preview step.
     const needsSigningConfirm =
       SIGNING_VERBS.has(parsed.alias) && !(parsed.alias === 'builder' && parsed.params.sign !== true);

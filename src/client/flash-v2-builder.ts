@@ -82,6 +82,13 @@ const RISK_BEARING_BUILDERS: ReadonlySet<string> = new Set([
   'increasePosition',
   'reversePosition',
   'removeCollateral',
+  // Entry-capable trigger builders: a hand-crafted `builder placeTriggerOrder
+  // --sign` / `editTriggerOrder` can open size, so it must also fail closed when
+  // caps are configured (deriveTradeLimits returns null for them → fail-closed
+  // path below). First-class TP/SL uses `placeTpSl`, which is NOT here, so
+  // protective stops on existing positions are unaffected.
+  'placeTriggerOrder',
+  'editTriggerOrder',
 ]);
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
