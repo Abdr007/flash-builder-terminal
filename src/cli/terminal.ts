@@ -222,6 +222,41 @@ const VERB_ALIASES: Record<string, string> = {
   perf: 'perf', performance: 'perf',
 };
 
+/** Verbs whose SECOND token is a market symbol — eligible for market tab-completion. */
+const MARKET_COMPLETION_VERBS: ReadonlySet<string> = new Set([
+  'long', 'short', 'open', 'close', 'limit', 'reverse', 'flip',
+  'partial', 'add', 'remove', 'increase', 'decrease', 'markets',
+]);
+
+/**
+ * Readline completer (pure, unit-tested via `completeReplLineForTest`): the
+ * first token completes to a verb; the second token after a market-taking verb
+ * completes to a market symbol (so users never have to remember/mistype exact
+ * symbols like FARTCOIN or JitoSOL). Empty fragment lists all candidates. Past
+ * the market, args are freeform (amounts, tp/sl) so we don't guess.
+ */
+export function completeReplLine(line: string, marketSymbols: Set<string>): [string[], string] {
+  const trimmed = line.trimStart();
+  if (!trimmed.includes(' ')) {
+    const verbs = new Set<string>([
+      ...Object.keys(VERB_ALIASES),
+      ...MARKET_COMPLETION_VERBS, // long/short/open/close/… — the primary trading verbs
+      'deposit', 'withdraw', 'setup', 'portfolio', 'status', 'close-all',
+      'help', 'exit', 'quit', 'clear', 'wallet', 'rpc', 'monitor', 'watch',
+      'kill', 'resume', 'init', 'env', 'feedback', 'ai',
+    ]);
+    const matches = Array.from(verbs).filter((v) => v.startsWith(trimmed.toLowerCase())).sort();
+    return [matches, trimmed];
+  }
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 2 && MARKET_COMPLETION_VERBS.has(parts[0].toLowerCase())) {
+    const frag = parts[1].toUpperCase();
+    const matches = Array.from(marketSymbols).filter((m) => m.startsWith(frag)).sort();
+    return [matches, parts[1]];
+  }
+  return [[], line];
+}
+
 interface ParsedCommand {
   alias: string;
   params: Record<string, unknown>;
@@ -941,7 +976,7 @@ function renderHelp(_engine: ToolEngine): string {
   lines.push(`  ${c.muted('Agent mode:')}  ${c.cyan('NO_DNA=1 magic <verb>')}  ${c.muted('→ JSON output, no prompts (https://no-dna.org)')}`);
   lines.push(`  ${c.muted('Health:')}      ${c.cyan('doctor')} ${c.muted('and')} ${c.cyan('perf')} ${c.muted('show RPC / cache / ER state at a glance')}`);
   lines.push(`  ${c.muted('Safety:')}      ${c.cyan('kill')} ${c.muted('refuses signing across restarts; ')}${c.cyan('resume')} ${c.muted('to re-enable')}`);
-  lines.push(`  ${c.muted('Tab + ↑↓:')}   ${c.muted('verb completion + history navigation')}`);
+  lines.push(`  ${c.muted('Tab + ↑↓:')}   ${c.muted('verb + market completion · history navigation')}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -1001,24 +1036,11 @@ export class MagicTerminal {
       output: process.stdout,
       prompt: this.makePrompt(),
       terminal: true,
-      // Tab completion for verbs. Only completes the first token; once the
-      // user is past the verb we don't second-guess what asset / amount they
-      // want. Returns the full candidate set on empty input so `tab` shows
-      // every available verb.
-      completer: (line: string): [string[], string] => {
-        const trimmed = line.trimStart();
-        // Don't complete past the first space — the rest is verb-specific args.
-        if (trimmed.includes(' ')) return [[], line];
-        const verbs = new Set<string>([
-          ...Object.keys(VERB_ALIASES),
-          'help', 'exit', 'quit', 'clear', 'wallet', 'rpc', 'monitor', 'watch',
-          'kill', 'resume', 'init', 'env', 'feedback', 'ai',
-        ]);
-        const matches = Array.from(verbs)
-          .filter((v) => v.startsWith(trimmed.toLowerCase()))
-          .sort();
-        return [matches, trimmed];
-      },
+      // Tab completion — verb (first token) then market symbol (second token
+      // after a market-taking verb). Extracted to `completeReplLine` so it's
+      // unit-tested; the symbol set is the cached per-pool custody list.
+      completer: (line: string): [string[], string] =>
+        completeReplLine(line, getMagicSymbolSet(this.config.network, this.config.poolName).symbols),
     });
     // Register the readline interface so background tickers (RPC failover
     // banner, ER tx post-confirm warnings, alert dispatches) can write
