@@ -135,6 +135,9 @@ export interface MagicConfig {
   withdrawFeePayerTopUpLamports?: number;
   /** Compute-unit price (microlamports) for L1 ixs. */
   computeUnitPrice: number;
+  /** Priority fee (µLamports/CU) for ER trades. Default 0 — the single-sequencer
+   *  ER has no fee auction, so a priority fee there is wasted. */
+  erPriorityFee: number;
   /** Skip Y/N preview before signing — default true (speed-first). */
   autoConfirm: boolean;
   /** ER trade ixs use skipConfirm and return immediately. */

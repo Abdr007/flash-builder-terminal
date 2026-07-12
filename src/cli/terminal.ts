@@ -242,6 +242,7 @@ export function completeReplLine(line: string, marketSymbols: Set<string>): [str
       ...Object.keys(VERB_ALIASES),
       ...MARKET_COMPLETION_VERBS, // long/short/open/close/… — the primary trading verbs
       'deposit', 'withdraw', 'setup', 'portfolio', 'status', 'close-all',
+      'stake', 'unstake', 'claim', 'referral', 'flp', 'earn',
       'help', 'exit', 'quit', 'clear', 'wallet', 'rpc', 'monitor', 'watch',
       'kill', 'resume', 'init', 'env', 'feedback', 'ai',
     ]);
@@ -380,6 +381,13 @@ const SIGNING_VERBS = new Set<string>([
   'deposit',
   'deposit-direct',
   'withdraw',
+  'stake',
+  'unstake',
+  'claim',
+  'referral',
+  'flp-deposit',
+  'flp-withdraw',
+  'flp-claim',
   'request-withdrawal',
   'withdrawal-settle',
   'settle',
@@ -864,6 +872,26 @@ const HELP_GROUPS: HelpGroup[] = [
     ],
   },
   {
+    title: 'Earn / Liquidity (FLP)',
+    entries: [
+      { cmd: 'flp',                            hint: 'Flash Liquidity Pools overview — pools + TVL' },
+      { cmd: 'flp deposit USDC 50',            hint: 'Provide liquidity — mint auto-compounding FLP' },
+      { cmd: 'flp withdraw USDC 10',           hint: 'Withdraw liquidity — burn FLP back to a token (0.05% fee)' },
+      { cmd: 'flp claim',                      hint: 'Claim staked-FLP (sFLP) rewards' },
+    ],
+  },
+  {
+    title: 'Token / FAF Staking',
+    entries: [
+      { cmd: 'stake 100',                      hint: 'Stake 100 FAF — revenue share + fee discounts + referral tiers' },
+      { cmd: 'unstake 50',                     hint: 'Request to unstake 50 FAF (90-day linear cooldown)' },
+      { cmd: 'claim revenue',                  hint: 'Claim your staking revenue share (paid in USDC)' },
+      { cmd: 'claim rewards',                  hint: 'Claim accrued FAF staking rewards' },
+      { cmd: 'claim rebate',                   hint: 'Claim referral rebate (USDC)' },
+      { cmd: 'referral',                       hint: 'Set your referrer (defaults to the house wallet)' },
+    ],
+  },
+  {
     title: 'Portfolio & Markets',
     entries: [
       { cmd: 'portfolio',                      hint: 'On-chain positions (entry, mark, PnL, liq)' },
@@ -1322,6 +1350,13 @@ export class MagicTerminal {
       'close-all':         'Close All Positions',
       'deposit':           'Deposit to Vault',
       'withdraw':          'Withdraw from Vault',
+      'stake':             'Stake FAF',
+      'unstake':           'Unstake FAF',
+      'claim':             'Claim',
+      'referral':          'Set Referral',
+      'flp-deposit':       'Provide Liquidity',
+      'flp-withdraw':      'Withdraw Liquidity',
+      'flp-claim':         'Claim FLP Rewards',
       'settle':            'Settle Custody',
       'setup':             'On-Chain Setup',
       'builder':           'V2 Builder',
@@ -1473,6 +1508,26 @@ export class MagicTerminal {
       if (parsed.alias === 'withdraw') {
         rows.push({ label: '', value: c.muted('2-step L1 request + L1 settle · ~1–2 s') });
       }
+    } else if (parsed.alias === 'stake' || parsed.alias === 'unstake') {
+      const amt = Number(parsed.params.amount ?? 0);
+      subtitle = `${DIAMOND}  ${c.muted(parsed.alias === 'stake' ? 'FAF → staked · revenue share' : 'unstake request · 90-day cooldown')}`;
+      rows.push({ label: parsed.alias === 'stake' ? 'Stake' : 'Unstake', value: c.primary.bold(`${amt} FAF`) });
+    } else if (parsed.alias === 'claim') {
+      const kind = String(parsed.params.kind ?? 'revenue');
+      const label = kind === 'rewards' || kind === 'reward' ? 'FAF rewards' : kind.startsWith('rebate') ? 'Referral rebate (USDC)' : 'Revenue share (USDC)';
+      subtitle = `${DIAMOND}  ${c.muted('claim')}`;
+      rows.push({ label: 'Claim', value: c.primary(label) });
+    } else if (parsed.alias === 'referral') {
+      const ref = String(parsed.params.referrer ?? 'Dvvzg9rwaNfUqBSscoMZJa5CHFv8Lm94ngZrRyLGLfmK');
+      subtitle = `${DIAMOND}  ${c.muted('create referral relationship')}`;
+      rows.push({ label: 'Referrer', value: c.primary(`${ref.slice(0, 6)}…${ref.slice(-4)}${parsed.params.referrer ? '' : ' (default)'}`) });
+    } else if (parsed.alias === 'flp-deposit' || parsed.alias === 'flp-withdraw') {
+      const token = String(parsed.params.token ?? 'USDC').toUpperCase();
+      const amt = Number(parsed.params.amount ?? 0);
+      const dep = parsed.alias === 'flp-deposit';
+      subtitle = `${DIAMOND}  ${c.muted(dep ? `${token} → FLP · auto-compounding` : `FLP → ${token} · 0.05% burn fee`)}`;
+      rows.push({ label: dep ? 'Deposit' : 'Burn', value: c.primary.bold(dep ? `${amt} ${token}` : `${amt} FLP`) });
+      if (!dep) rows.push({ label: 'Receive in', value: c.primary(token) });
     } else {
       // Generic fallback — render whichever params are set.
       const market = String(parsed.params.market ?? '').toUpperCase();
@@ -1628,6 +1683,30 @@ export class MagicTerminal {
     // `wallet ...` subcommands — manage the active wallet without exiting.
     if (lower === 'wallet' || lower.startsWith('wallet ')) {
       await this.handleWalletSubcommand(line);
+      return;
+    }
+
+    // `er bench [url...]` — measure real getSlot RTT to the current ER endpoint
+    // plus any candidate URLs, so the fastest (lowest-latency) sequencer can be
+    // chosen and set via MAGIC_RPC_URL. The ER RTT is what every trade's submit +
+    // confirm pays, so this is the single biggest latency lever.
+    if (lower === 'er bench' || lower.startsWith('er bench ')) {
+      await this.handleErBench(line.split(/\s+/).slice(2));
+      return;
+    }
+
+    // `instant on|off`, `turbo on|off`, `fast on|off` — runtime latency-mode
+    // toggles so the trader doesn't have to restart with an env var. `instant` =
+    // optimistic UI (render on fire, confirm in background). `turbo` = also build
+    // the ix client-side, skipping flashapi's build hop. `fast` = both.
+    if (/^(instant|turbo|fast)(\s+(on|off|1|0|true|false))?$/.test(lower)) {
+      await this.handleLatencyMode(lower);
+      return;
+    }
+
+    // `cost` / `fees` — show the per-trade transaction cost + how to tune it.
+    if (lower === 'cost' || lower === 'fees' || lower.startsWith('fee ')) {
+      this.handleCost(lower);
       return;
     }
 
@@ -2290,6 +2369,127 @@ export class MagicTerminal {
   }
 
   /**
+   * `cost` / `fee <µLamports>` — show/tune the per-trade transaction cost.
+   * On the single-sequencer ER a priority fee is wasted, so the default is 0 —
+   * a trade costs just the fixed 5000-lamport base fee.
+   */
+  private handleCost(line: string): void {
+    const [cmd, arg] = line.trim().split(/\s+/);
+    if (cmd === 'fee' && arg !== undefined) {
+      const n = Number(arg);
+      if (Number.isFinite(n) && n >= 0) {
+        process.env.MAGIC_ER_PRIORITY_FEE = String(Math.floor(n));
+        this.config.erPriorityFee = Math.floor(n);
+        try {
+          // Persist (append if absent).
+          void import('../config/index.js').then(({ syncEnvLine, userEnvFilePath }) => import('node:fs').then(({ appendFileSync }) => {
+            if (!syncEnvLine('MAGIC_ER_PRIORITY_FEE', String(Math.floor(n)))) {
+              const p = userEnvFilePath();
+              appendFileSync(p, `MAGIC_ER_PRIORITY_FEE=${Math.floor(n)}\n`, { mode: 0o600 });
+            }
+          }));
+        } catch { /* best-effort */ }
+      }
+    }
+    const erFee = this.config.erPriorityFee;
+    // ER opens use ~120k CU in practice; base fee is a fixed 5000 lamports/sig.
+    const CU = 120_000, BASE = 5000;
+    const prio = Math.round((erFee * CU) / 1_000_000); // µLamports/CU × CU / 1e6 = lamports
+    const total = BASE + prio;
+    const usd = (lamports: number): string => `~$${((lamports / 1e9) * 200).toFixed(5)}`; // ≈$200/SOL
+    process.stdout.write([
+      '',
+      `  ${c.teal.bold('TRANSACTION COST')}   ${c.muted('per ER trade (turbo path)')}`,
+      `  ${c.muted('Base fee')}        ${c.primary(`${BASE} lamports`)}  ${c.faint('(fixed, 1 sig)')}`,
+      `  ${c.muted('ER priority')}     ${erFee === 0 ? c.long('0') : c.primary(String(erFee))} ${c.muted('µLamports/CU')}  ${c.faint(`→ ${prio} lamports @ ~${CU / 1000}k CU`)}`,
+      `  ${c.muted('Total')}           ${c.long.bold(`${total} lamports`)}  ${c.faint(usd(total))}`,
+      '',
+      `  ${c.faint(erFee === 0
+        ? 'cheapest possible — the single-sequencer ER needs no priority fee. Tune: fee <µLamports/CU>'
+        : 'tune with: fee 0   (0 = cheapest; the ER has no fee auction)')}`,
+      '',
+    ].join('\n'));
+  }
+
+  /**
+   * `instant|turbo|fast [on|off]` — runtime latency-mode toggle. Mutates the
+   * process env the trade path reads (MAGIC_INSTANT / MAGIC_TURBO), so a trader
+   * can flip optimistic / client-side-build execution without restarting.
+   */
+  private async handleLatencyMode(line: string): Promise<void> {
+    const [cmd, arg] = line.trim().split(/\s+/);
+    const on = arg === undefined || arg === 'on' || arg === '1' || arg === 'true';
+    // Persist to ~/.magic/.env (loaded into process.env on next startup) so the
+    // preference sticks — AND mutate the live process.env so it takes effect now.
+    const { syncEnvLine, userEnvFilePath } = await import('../config/index.js');
+    const { appendFileSync } = await import('node:fs');
+    const set = (k: string, v: boolean): void => {
+      const val = v ? '1' : '0';
+      process.env[k] = val; // '0' is not '1', so the trade path reads it as off
+      try {
+        // syncEnvLine updates an existing line; if the key isn't in .env yet it
+        // returns false, so append it.
+        if (!syncEnvLine(k, val)) {
+          const p = userEnvFilePath();
+          appendFileSync(p, `${k}=${val}\n`, { mode: 0o600 });
+        }
+      } catch { /* persist best-effort */ }
+    };
+    if (cmd === 'instant') set('MAGIC_INSTANT', on);
+    else if (cmd === 'turbo') set('MAGIC_TURBO', on);
+    else if (cmd === 'fast') { set('MAGIC_INSTANT', on); set('MAGIC_TURBO', on); }
+    // instant is default-ON (opt-out with =0); turbo is opt-IN (needs =1).
+    const isOn = (k: string): boolean => (k === 'MAGIC_INSTANT' ? process.env[k] !== '0' : process.env[k] === '1');
+    const badge = (k: string): string => (isOn(k) ? c.long('● on') : c.muted('○ off'));
+    process.stdout.write(`\n  ${c.teal.bold('LATENCY MODE')}    instant ${badge('MAGIC_INSTANT')}   ·   turbo ${badge('MAGIC_TURBO')}   ${c.faint('(saved — persists across restarts)')}\n`);
+    const anyOn = isOn('MAGIC_INSTANT') || isOn('MAGIC_TURBO');
+    process.stdout.write(anyOn
+      ? `  ${c.muted('trades render on fire + confirm in the background (optimistic) — a revert warns after.')}\n\n`
+      : `  ${c.muted('back to confirm-before-success (the card waits for the on-chain confirm).')}\n\n`);
+  }
+
+  /**
+   * `er bench [url...]` — measure getSlot RTT to the current ER endpoint plus
+   * any candidate URLs. The ER round-trip is what every trade's submit + confirm
+   * pays, so picking the lowest-RTT sequencer (then `MAGIC_RPC_URL=<it>`) is the
+   * single biggest latency lever after the submit fix.
+   */
+  private async handleErBench(urls: string[]): Promise<void> {
+    const { Connection } = await import('@solana/web3.js');
+    const host = (u: string): string => { try { return new URL(u).hostname; } catch { return u; } };
+    const current = this.config.erRpcUrl ?? 'https://flashtrade.magicblock.app/';
+    const candidates = [...new Set([current, ...urls].filter((u) => /^https?:\/\//.test(u)))];
+    process.stdout.write(`\n  ${c.muted(`Benchmarking ${candidates.length} ER endpoint(s) — getSlot RTT ×7 …`)}\n\n`);
+    const results: { url: string; med: number; ok: number }[] = [];
+    for (const url of candidates) {
+      const conn = new Connection(url, 'confirmed');
+      const samples: number[] = [];
+      for (let i = 0; i < 7; i++) {
+        const t0 = Date.now();
+        try { await conn.getSlot('confirmed'); samples.push(Date.now() - t0); } catch { /* unreachable */ }
+      }
+      const sorted = samples.sort((a, b) => a - b);
+      results.push({ url, med: sorted.length ? sorted[Math.floor(sorted.length / 2)] : Infinity, ok: sorted.length });
+    }
+    results.sort((a, b) => a.med - b.med);
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      const mark = r.med === Infinity ? c.short('✗') : i === 0 ? c.long('⚡') : c.muted('•');
+      const rtt = r.med === Infinity ? c.short('unreachable') : (i === 0 ? c.long : c.primary)(`${r.med}ms`);
+      const isCur = r.url === current ? c.faint('  (current)') : '';
+      process.stdout.write(`  ${mark}  ${rtt.padEnd(18)}${c.muted(host(r.url))}${isCur}\n`);
+    }
+    const best = results.find((r) => r.med !== Infinity);
+    if (best && best.url !== current) {
+      process.stdout.write(`\n  ${c.long('→')} ${c.muted('fastest is')} ${c.teal.bold(host(best.url))}${c.muted('. Use it:')}\n`);
+      process.stdout.write(`     ${c.teal.bold(`MAGIC_RPC_URL=${best.url} magic`)}\n`);
+    } else if (best) {
+      process.stdout.write(`\n  ${c.muted('current endpoint is already the fastest of these.')}\n`);
+    }
+    process.stdout.write('\n');
+  }
+
+  /**
    * `magic init` — bootstrap the user-global config so an npm-installed
    * user has an obvious place to put their RPC URL / wallet path / caps
    * without having to grep the README for `~/.magic/.env`.
@@ -2354,6 +2554,9 @@ export class MagicTerminal {
       network: networkFlag,
       rl: this.rl,
       maskRpc: !quick,
+      // Preserve the user's current (often paid) RPC as the [enter] default so
+      // re-running `init` never silently downgrades them to public mainnet.
+      defaultRpc: this.config.l1RpcUrl,
     });
     if (result.cancelled) {
       this.lastFailed = false;

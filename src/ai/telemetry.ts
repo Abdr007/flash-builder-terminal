@@ -8,6 +8,7 @@
 
 import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
+import { sanitizeText } from '../utils/sanitize-text.js';
 import { resolve, dirname } from 'path';
 
 const TELEMETRY_PATH = resolve(homedir(), '.magic', 'ai-telemetry.jsonl');
@@ -35,7 +36,11 @@ export function recordAiCall(
   try {
     const dir = dirname(filePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-    appendFileSync(filePath, JSON.stringify(rec) + '\n', { mode: 0o600 });
+    // Sanitize + cap before writing: fields like `resolvedAlias` / `fallbackReason`
+    // can derive from an (untrusted) model response, so strip control bytes and
+    // bound the line so a hostile/garbage response can't corrupt the JSONL log.
+    const line = sanitizeText(JSON.stringify(rec)).slice(0, 4000);
+    appendFileSync(filePath, line + '\n', { mode: 0o600 });
   } catch {
     /* telemetry must never break the trading loop */
   }

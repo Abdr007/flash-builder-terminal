@@ -18,7 +18,7 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { readFileSync, statSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { resolve } from 'path';
-import { ToolDefinition, ToolContext, ToolResult } from '../types/index.js';
+import { ToolDefinition, ToolContext, ToolResult, TradeSide } from '../types/index.js';
 import { MagicTradeClient } from '../client/magic-client.js';
 import {
   FlashV2BuilderClient,
@@ -43,6 +43,14 @@ import { getFlashMarketService } from '../data/flash-markets.js';
 /** USDC mints — mainnet vs devnet test stable. */
 const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const USDC_MINT_DEVNET = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
+
+// Default referrer for `create-referral` — every referral relationship this CLI
+// creates attributes to this wallet unless overridden via MAGIC_REFERRER.
+const DEFAULT_REFERRER = 'Dvvzg9rwaNfUqBSscoMZJa5CHFv8Lm94ngZrRyLGLfmK';
+function referrerAddress(): string {
+  const env = (process.env.MAGIC_REFERRER ?? '').trim();
+  return env.length >= 32 ? env : DEFAULT_REFERRER;
+}
 
 /**
  * Pick the explorer base host. Default: Solana Explorer.
@@ -162,7 +170,10 @@ export function buildMagicClient(context: ToolContext): MagicTradeClient {
     poolName,
     erEndpoint,
     programIdOverride: context.config.programIdOverride,
-    prioritizationFee: context.config.computeUnitPrice,
+    // ER trades pay NO priority fee by default (single sequencer, no auction) —
+    // the cheapest possible tx (just the fixed base fee). Was 50k µLamports/CU
+    // (~10k lamports/trade wasted). Bump via MAGIC_ER_PRIORITY_FEE if needed.
+    prioritizationFee: context.config.erPriorityFee,
     fastConfirm: context.config.fastConfirm,
   });
   _magicClientCache.set(cacheKey, client);
@@ -260,12 +271,16 @@ export function buildFlashV2Client(context: ToolContext): FlashV2BuilderClient {
     context.config.l1RpcUrl ??
     (context.config.network === 'mainnet-beta' ? 'https://api.mainnet-beta.solana.com' : 'https://api.devnet.solana.com');
   const apiUrl = context.config.flashApiUrl ?? 'https://flashapi.trade';
-  const cacheKey = `${apiUrl}:${l1Url}`;
+  // The ER endpoint Flash V2 trades land on — confirmation must be polled HERE
+  // (it confirms in <1s), not on L1 (where the sig only settles seconds later).
+  const erEndpoint = context.config.erRpcUrl ?? 'https://flashtrade.magicblock.app/';
+  const cacheKey = `${apiUrl}:${l1Url}:${erEndpoint}`;
   const cached = _flashV2ClientCache.get(cacheKey);
   if (cached) return cached;
   const client = new FlashV2BuilderClient({
     baseUrl: apiUrl,
     l1Connection: new Connection(l1Url, 'confirmed'),
+    erConnection: new Connection(erEndpoint, 'confirmed'),
   });
   _flashV2ClientCache.set(cacheKey, client);
   return client;
@@ -484,14 +499,18 @@ async function sizeUsdToTokenAmount(client: FlashV2BuilderClient, market: string
   return uiAmount(sizeUsd / px);
 }
 
-function builderTxRows(result: FlashV2BuilderResult, network: 'mainnet-beta' | 'devnet'): Array<{ label: string; value: string }> {
+function builderTxRows(result: FlashV2BuilderResult, _network: 'mainnet-beta' | 'devnet'): Array<{ label: string; value: string }> {
   if ('previewOnly' in result) {
     return [{ label: 'Mode', value: c.muted('preview only — no transaction returned') }];
   }
-  return [
-    { label: 'Tx', value: c.muted(solscanTx(result.signature, network)) },
-    { label: 'State', value: c.muted('re-read basket snapshot / stream for final state') },
-  ];
+  // Compact signature only — the full clickable explorer link is rendered once,
+  // BELOW the card, via each card's `url:` field. Printing the whole URL here
+  // too made every trade card wrap into an unreadable wall (and duplicated the
+  // link). The dropped "re-read basket snapshot / stream for final state" row
+  // was jargon that told the user nothing actionable.
+  const sig = result.signature;
+  const shortSig = sig.length > 14 ? `${sig.slice(0, 6)}…${sig.slice(-6)}` : sig;
+  return [{ label: 'Tx', value: c.muted(shortSig) }];
 }
 
 // Client-side slippage cap (a PERCENT, sent to the API as a string). Every
@@ -1077,26 +1096,61 @@ export const magicSetup: ToolDefinition = {
   description: 'One-time V2 setup: initialize deposit ledger, basket, and delegate basket.',
   async execute(_params, context): Promise<ToolResult> {
     const owner = ownerKeypair(context).publicKey.toBase58();
-    const steps: string[] = [];
 
-    for (const [label, op] of [
-      ['DepositLedger', 'initDepositLedger'],
-      ['Basket', 'initBasket'],
-      ['Delegate', 'delegateBasket'],
-    ] as const) {
-      try {
-        const result = await signV2(context, op, { owner });
-        if ('previewOnly' in result) steps.push(`✓ ${label}: preview only`);
-        else steps.push(`✓ ${label}: ${result.signature}`);
-      } catch (err) {
-        steps.push(`✗ ${label}: ${getErrorMessage(err)}`);
-      }
+    // Idempotency pre-check (one read, no signatures): the deposit-ledger,
+    // basket, and delegation state are all on-chain. Re-running the Builder init
+    // for an account that already exists makes the FLASH6 program reject the tx
+    // with a scary error (ConstraintSpace / AccountOwnedByWrongProgram / "modified
+    // data of an account it does not own"). Detect what's already done and SKIP
+    // it, so a re-run reads as "already set up" instead of a wall of failures.
+    let udlExists = false;
+    let basketExists = false;
+    let delegated = false;
+    try {
+      const wrap = buildMagicClient(context) as unknown as {
+        l1Connection: import('@solana/web3.js').Connection;
+        basketPda: PublicKey;
+        userDepositLedgerPda: PublicKey;
+      };
+      const [basketInfo, udlInfo] = await wrap.l1Connection.getMultipleAccountsInfo(
+        [wrap.basketPda, wrap.userDepositLedgerPda], 'confirmed',
+      );
+      udlExists = !!udlInfo;
+      basketExists = !!basketInfo;
+      delegated = basketInfo?.owner.toBase58() === ER_DELEGATION_PROGRAM_ID;
+    } catch {
+      /* read failed — fall through and attempt the steps (old behavior) */
     }
 
+    const steps: Array<{ label: string; value: string }> = [];
+    const run = async (label: string, op: 'initDepositLedger' | 'initBasket' | 'delegateBasket', skip: boolean): Promise<void> => {
+      if (skip) { steps.push({ label, value: c.long('✓ already done') }); return; }
+      try {
+        const result = await signV2(context, op, { owner });
+        steps.push({ label, value: 'previewOnly' in result ? c.muted('preview only') : c.long('✓ done') });
+      } catch (err) {
+        steps.push({ label, value: c.short(`✗ ${getErrorMessage(err)}`) });
+      }
+    };
+
+    // A delegated basket implies the ledger + basket already exist, so skip both.
+    await run('Deposit ledger', 'initDepositLedger', udlExists || delegated);
+    await run('Basket', 'initBasket', basketExists || delegated);
+    await run('Delegate to ER', 'delegateBasket', delegated);
+
+    const allDone = udlExists && basketExists && delegated;
     return {
       success: true,
-      message: steps.join('\n'),
-      data: { steps },
+      message: renderCard({
+        status: allDone ? 'Already Set Up' : 'Setup',
+        tone: allDone ? 'info' : 'open',
+        subtitle: allDone
+          ? c.muted('deposit ledger + basket + delegation all in place')
+          : c.muted('one-time per-wallet on-chain setup'),
+        columns: 1,
+        rows: steps,
+      }),
+      data: { steps, allDone },
     };
   },
 };
@@ -1173,7 +1227,6 @@ export const magicDepositDirect: ToolDefinition = {
         rows: [
           { label: 'Mint', value: c.primary.bold(tokenMint) },
           { label: 'Amount', value: c.primary(String(amountHuman)) },
-          { label: 'State', value: c.muted('re-read basket snapshot / stream for final state') },
         ],
         url: solscanTx(result.signature, context.config.network),
       }),
@@ -1473,14 +1526,24 @@ export const magicWithdraw: ToolDefinition = {
     }
 
     const feePayer = withdrawFeePayer(context, owner.publicKey);
+    // The V2 program requires feePayer !== owner, so with no configured payer we
+    // use a throwaway keypair — which has 0 SOL and cannot pay the ATA-creation
+    // rent, making the withdraw fail with "insufficient lamports 0, need …".
+    // Default a top-up (funded by the owner, who signs this tx) so a first-time
+    // withdraw works out of the box. An explicitly configured, pre-funded
+    // fee-payer path skips this and keeps its configured (or zero) top-up.
+    const feePayerGenerated = !context.config.withdrawFeePayerPath;
+    const DEFAULT_FEE_PAYER_TOPUP_LAMPORTS = 3_000_000; // ~0.003 SOL: ATA rent (~0.00204) + fee buffer
+    const topUpLamports =
+      context.config.withdrawFeePayerTopUpLamports && context.config.withdrawFeePayerTopUpLamports > 0
+        ? context.config.withdrawFeePayerTopUpLamports
+        : feePayerGenerated ? DEFAULT_FEE_PAYER_TOPUP_LAMPORTS : 0;
     const body: Record<string, unknown> = {
       owner: owner.publicKey.toBase58(),
       tokenSymbol: symbol,
       amount: uiAmount(amountHuman),
       feePayer: feePayer.publicKey.toBase58(),
-      ...(context.config.withdrawFeePayerTopUpLamports && context.config.withdrawFeePayerTopUpLamports > 0
-        ? { feePayerTopUpLamports: context.config.withdrawFeePayerTopUpLamports }
-        : {}),
+      ...(topUpLamports > 0 ? { feePayerTopUpLamports: topUpLamports } : {}),
     };
     const result = await client.signAndSubmit('withdraw', body, [owner, feePayer], {
       refreshOwner: owner.publicKey.toBase58(),
@@ -1503,9 +1566,7 @@ export const magicWithdraw: ToolDefinition = {
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Token',  value: c.primary.bold(symbol) },
       { label: 'Amount', value: c.primary(`${amountFmt} ${symbol}`) },
-      { label: 'Fee payer', value: c.muted(`${feePayer.publicKey.toBase58().slice(0, 8)}…${feePayer.publicKey.toBase58().slice(-4)}`) },
-      { label: 'Tx', value: c.muted(solscanTx(result.signature, context.config.network)) },
-      { label: 'State', value: c.muted('re-read basket snapshot / stream for final state') },
+      { label: 'Tx', value: c.muted(result.signature.length > 14 ? `${result.signature.slice(0, 6)}…${result.signature.slice(-6)}` : result.signature) },
     ];
     if (custodySettlementRequired) {
       rows.push({ label: 'Recovery', value: c.warn('run `custody-settlement ' + symbol + '` then retry withdraw') });
@@ -1520,6 +1581,7 @@ export const magicWithdraw: ToolDefinition = {
       subtitle: `${DIAMOND}  ${c.muted('Flash Account → wallet · pending confirmation')}`,
       columns: 1,
       rows,
+      url: solscanTx(result.signature, context.config.network),
     });
 
     return {
@@ -1742,6 +1804,62 @@ export const magicOpen: ToolDefinition = {
         url: solscanTx(r.signature, context.config.network),
       });
       return { success: true, message: card, txSignature: r.signature, data: { merged: true, existing, added: { sizeUsd, collateral }, triggersRequested: params.tp !== undefined || params.sl !== undefined, triggersAttached, response: r.response } };
+    }
+
+    // ── TURBO PATH (opt-in, MAGIC_TURBO=1): lowest latency ────────────────────
+    // Build the open-position instruction CLIENT-SIDE via the ER SDK — reusing
+    // the quote the confirm-card preview already computed (cached <5s) — and fire
+    // it async to the ER (skipConfirm) instead of the flashapi build+submit round
+    // trips. The card renders the instant the tx is fired; a background watcher
+    // confirms and warns on the rare revert. Perceived latency collapses to local
+    // ix-build + sign + fire (~5-20ms) + the ER endpoint's RTT. Set the ER
+    // endpoint via MAGIC_RPC_URL (e.g. your Asia sequencer) to minimize that RTT.
+    // Requires the basket delegated to the ER (setup already does this).
+    // Turbo (client-side build, cheapest + lowest-latency) stays OPT-IN until
+    // verified end-to-end — enable with `turbo on` / MAGIC_TURBO=1. Instant is
+    // already the smooth default via the confirm path below.
+    if (process.env.MAGIC_TURBO === '1') {
+      const mc = buildMagicClient(context);
+      const r = await mc.openPosition(
+        targetMarket,
+        targetSide === 'short' ? TradeSide.Short : TradeSide.Long,
+        collateral,
+        leverage,
+        (params.collateralToken as string | undefined),
+        params.tp as number | undefined,
+        params.sl as number | undefined,
+      );
+      const liqStr = r.liquidationPrice > 0 ? chalk.yellow(formatPrice(r.liquidationPrice)) : chalk.dim('N/A');
+      let distPct = 0;
+      if (Number.isFinite(r.entryPrice) && r.entryPrice > 0 && Number.isFinite(r.liquidationPrice) && r.liquidationPrice > 0) {
+        const raw = targetSide === 'long' ? (r.entryPrice - r.liquidationPrice) / r.entryPrice : (r.liquidationPrice - r.entryPrice) / r.entryPrice;
+        distPct = Math.max(0, raw) * 100;
+      }
+      const distColor = distPct >= 30 ? c.long : distPct >= 15 ? c.warn : c.short;
+      const turboRows: Array<{ label: string; value: string }> = [
+        { label: 'Entry', value: chalk.bold(formatPrice(r.entryPrice)) },
+        { label: 'Liquidation', value: liqStr },
+      ];
+      if (distPct > 0) turboRows.push({ label: 'Dist to Liq', value: distColor(`${distPct.toFixed(2)}%`) });
+      turboRows.push(
+        { label: 'Size', value: chalk.bold(formatUsdExact(r.sizeUsd)) },
+        { label: 'Collateral', value: formatUsdExact(collateral) },
+        { label: 'Tx', value: c.muted(r.txSignature.length > 14 ? `${r.txSignature.slice(0, 6)}…${r.txSignature.slice(-6)}` : r.txSignature) },
+        { label: c.warn('Status'), value: c.warn('⚡ turbo — submitted, confirming in background') },
+      );
+      return {
+        success: true,
+        message: renderCard({
+          status: 'Position Submitted',
+          tone: 'open',
+          subtitle: marketHeader(targetMarket, String(params.side), leverage),
+          columns: 1,
+          rows: turboRows,
+          url: solscanTx(r.txSignature, context.config.network),
+        }),
+        txSignature: r.txSignature,
+        data: { turbo: true, entryPrice: r.entryPrice, sizeUsd: r.sizeUsd },
+      };
     }
 
     // No existing position — normal atomic open + (optional) inline TP/SL.
@@ -3565,13 +3683,25 @@ export const magicSettle: ToolDefinition = {
       };
     }
     const client = buildFlashV2Client(context);
-    const poolData = await client.poolData();
-    const symbols = new Set<string>();
-    for (const pool of isPoolData(poolData)) {
-      for (const cu of records(pool.custodyStats)) {
-        const sym = fieldString(cu, 'symbol').toUpperCase();
-        if (sym) symbols.add(sym);
-      }
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    // Only settle custodies where the user ACTUALLY has a pending balance.
+    // Iterating all ~65 pool custodies fired one tx each — hitting the trade
+    // rate limit after 10 and erroring `AccountNotInitialized` on every token
+    // the user never traded. Read the basket's pending debits/credits and settle
+    // just those (usually 1: USDC).
+    const balances = await readV2BasketTokenBalances(client, owner);
+    const symbols = [...balances.values()].filter((b) => b.total > 0).map((b) => b.symbol.toUpperCase());
+    if (symbols.length === 0) {
+      return {
+        success: true,
+        message: renderCard({
+          status: 'Nothing to Settle',
+          tone: 'info',
+          subtitle: c.muted('no pending balances'),
+          columns: 1,
+          rows: [{ label: '', value: c.muted('All balances are already available to trade.') }],
+        }),
+      };
     }
     const results: { symbol: string; sig?: string; err?: string }[] = [];
     for (const sym of symbols) {
@@ -4106,7 +4236,210 @@ export function journalMagicTrade(
   });
 }
 
+// ─── Token / FAF staking + revenue + referral ──────────────────────────────
+// All funds-route builders (verified param contract). Cards are honest about the
+// pending → confirmed state like every other mutation.
+function tokenCard(status: string, tone: 'open' | 'close', subtitle: string, rows: Array<{ label: string; value: string }>, result: FlashV2BuilderResult, context: ToolContext): ToolResult {
+  if ('previewOnly' in result) return { success: true, message: c.muted(`  ${status.toLowerCase()} preview only — no transaction returned`), data: { response: result.response } };
+  return {
+    success: true,
+    message: renderCard({
+      status: confirmStatus(result, status, `${status.split(' ')[0]} Submitted`),
+      tone,
+      subtitle: `${DIAMOND}  ${c.muted(subtitle)}`,
+      columns: 1,
+      rows: [...rows, ...builderTxRows(result, context.config.network), ...pendingRows(result)],
+      url: solscanTx(result.signature, context.config.network),
+    }),
+    txSignature: result.signature,
+  };
+}
+
+export const magicStake: ToolDefinition = {
+  name: 'magicStake',
+  description: 'Stake FAF to unlock revenue share + fee discounts + referral tiers. args: amount (FAF).',
+  parameters: z.object({ amount: z.number().positive() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const amount = params.amount as number;
+    const doStake = (): Promise<FlashV2BuilderResult> => signV2(context, 'stakeToken', { owner, amount: uiAmount(amount) });
+    let result: FlashV2BuilderResult;
+    try {
+      result = await doStake();
+    } catch (err) {
+      // First-ever stake needs the token-stake account initialized once.
+      if (/not initialized|AccountNotInitialized|3012/i.test(getErrorMessage(err))) {
+        await signV2(context, 'initTokenStake', { owner });
+        result = await doStake();
+      } else throw err;
+    }
+    return tokenCard('FAF Staked', 'open', 'FAF → staked · up to 50% daily revenue share', [
+      { label: 'Staked', value: c.primary.bold(`${amount} FAF`) },
+    ], result, context);
+  },
+};
+
+export const magicUnstake: ToolDefinition = {
+  name: 'magicUnstake',
+  description: 'Request to unstake FAF (90-day linear cooldown). args: amount (FAF).',
+  parameters: z.object({ amount: z.number().positive() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const amount = params.amount as number;
+    const result = await signV2(context, 'unstakeTokenRequest', { owner, amount: uiAmount(amount) });
+    return tokenCard('Unstake Requested', 'close', '90-day linear cooldown · revenue share continues on remaining stake', [
+      { label: 'Unstaking', value: c.primary.bold(`${amount} FAF`) },
+    ], result, context);
+  },
+};
+
+export const magicClaim: ToolDefinition = {
+  name: 'magicClaim',
+  description: 'Claim staking revenue (USDC), FAF rewards, or referral rebate. args: kind (revenue|rewards|rebate).',
+  parameters: z.object({ kind: z.string().optional() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const usdc = stableMintFor(context.config.network);
+    const kind = (params.kind as string | undefined)?.toLowerCase() ?? 'revenue';
+    let result: FlashV2BuilderResult;
+    let label: string;
+    if (kind === 'rewards' || kind === 'reward') {
+      result = await signV2(context, 'collectTokenReward', { owner });
+      label = 'FAF rewards';
+    } else if (kind === 'rebate' || kind === 'rebates') {
+      result = await signV2(context, 'collectRebate', { owner, rebateTokenMint: usdc });
+      label = 'Referral rebate (USDC)';
+    } else {
+      result = await signV2(context, 'collectRevenue', { owner, revenueTokenMint: usdc });
+      label = 'Revenue share (USDC)';
+    }
+    return tokenCard('Claimed', 'close', label, [{ label: 'Claimed', value: c.primary(label) }], result, context);
+  },
+};
+
+export const magicReferral: ToolDefinition = {
+  name: 'magicReferral',
+  description: 'Create a referral relationship (default referrer = Dvv wallet). args: referrer? (address).',
+  parameters: z.object({ referrer: z.string().optional() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const referrer = ((params.referrer as string | undefined)?.trim() || referrerAddress());
+    if (referrer === owner) {
+      return { success: false, message: c.short('  You cannot refer yourself — the referrer must be a different wallet.') };
+    }
+    const result = await signV2(context, 'createReferral', { owner, referrer });
+    return tokenCard('Referral Set', 'open', `referrer ${referrer.slice(0, 6)}…${referrer.slice(-4)}`, [
+      { label: 'Referrer', value: c.primary(`${referrer.slice(0, 6)}…${referrer.slice(-4)}`) },
+    ], result, context);
+  },
+};
+
+// ─── Earn / FLP liquidity ───────────────────────────────────────────────────
+// Compounding FLP (auto-compounding LP token). The pool is selected by the
+// token symbol (verified against the live builder). Funds-route builders.
+export const magicFlpDeposit: ToolDefinition = {
+  name: 'magicFlpDeposit',
+  description: 'Provide liquidity — mint auto-compounding FLP. args: token symbol, amount (human units).',
+  parameters: z.object({ token: z.string(), amount: z.number().positive() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const token = String(params.token).toUpperCase();
+    const amount = params.amount as number;
+    const result = await signV2(context, 'addCompoundingLiquidity', {
+      owner, inputTokenSymbol: token, amount: uiAmount(amount),
+    });
+    return tokenCard('Liquidity Added', 'open', `${token} → FLP.1 (Crypto) · auto-compounding yield`, [
+      { label: 'Deposit', value: c.primary.bold(`${amount} ${token}`) },
+      { label: 'Pool', value: c.primary('FLP.1 · Crypto') },
+      { label: 'Receive', value: c.muted('FLP.1 (auto-compounding LP)') },
+    ], result, context);
+  },
+};
+
+export const magicFlpWithdraw: ToolDefinition = {
+  name: 'magicFlpWithdraw',
+  description: 'Withdraw liquidity — burn FLP back to a token. args: token symbol, amount (FLP units).',
+  parameters: z.object({ token: z.string(), amount: z.number().positive() }),
+  async execute(params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const token = String(params.token).toUpperCase();
+    const amount = params.amount as number;
+    const result = await signV2(context, 'removeCompoundingLiquidity', {
+      owner, outputTokenSymbol: token, amount: uiAmount(amount),
+    });
+    return tokenCard('Liquidity Removed', 'close', `FLP → ${token} · 0.05% burn fee applies`, [
+      { label: 'Burn', value: c.primary.bold(`${amount} FLP`) },
+      { label: 'Receive in', value: c.primary(token) },
+    ], result, context);
+  },
+};
+
+export const magicFlpClaim: ToolDefinition = {
+  name: 'magicFlpClaim',
+  description: 'Claim staked-FLP (sFLP) rewards.',
+  parameters: z.object({}),
+  async execute(_params, context): Promise<ToolResult> {
+    const owner = ownerKeypair(context).publicKey.toBase58();
+    const result = await signV2(context, 'collectStakeReward', { owner });
+    return tokenCard('FLP Rewards Claimed', 'close', 'staked-FLP rewards → wallet', [
+      { label: 'Claim', value: c.primary('sFLP rewards') },
+    ], result, context);
+  },
+};
+
+export const magicFlp: ToolDefinition = {
+  name: 'magicFlp',
+  description: 'Flash Liquidity Pools overview — every pool with TVL, FLP price, and capacity.',
+  parameters: z.object({}),
+  async execute(_params, context): Promise<ToolResult> {
+    const client = buildFlashV2Client(context);
+    const poolData = await client.poolData().catch(() => null);
+    // pool-data returns { pools: [{ poolName, lpStats: { lpPrice, totalPoolValueUsd,
+    // maxAumUsd, stableCoinPercentage, lpTokenSupply }, ... }] } — verified live.
+    const pools = (poolData && typeof poolData === 'object' && Array.isArray((poolData as Record<string, unknown>).pools))
+      ? ((poolData as Record<string, unknown>).pools as Record<string, unknown>[])
+      : [];
+    const rows: Array<{ label: string; value: string }> = [];
+    for (const pool of pools) {
+      const name = fieldString(pool, 'poolName');
+      if (!name) continue;
+      const lp = (pool.lpStats && typeof pool.lpStats === 'object') ? pool.lpStats as Record<string, unknown> : {};
+      const tvl = fieldNumber(lp, 'totalPoolValueUsd');
+      const price = fieldNumber(lp, 'lpPrice');
+      const maxAum = fieldNumber(lp, 'maxAumUsd');
+      const fillPct = maxAum > 0 ? Math.min(100, (tvl / maxAum) * 100) : 0;
+      const priceStr = price > 0 ? `FLP ${formatPrice(price)}` : '';
+      const capStr = fillPct > 0 ? c.faint(`${fillPct.toFixed(0)}% full`) : '';
+      rows.push({
+        label: c.primary.bold(name),
+        value: `${tvl > 0 ? c.primary(`TVL ${formatUsd(tvl)}`) : c.muted('—')}   ${c.muted(priceStr)}   ${capStr}`.trimEnd(),
+      });
+    }
+    if (rows.length === 0) rows.push({ label: '', value: c.muted('pool data unavailable — try again') });
+    rows.push({ label: '', value: c.faint('flp deposit <token> <amt>  ·  flp withdraw <token> <amt>  ·  flp claim') });
+    return {
+      success: true,
+      message: renderCard({
+        status: 'Flash Liquidity Pools',
+        tone: 'info',
+        subtitle: `${DIAMOND}  ${c.muted(`${rows.length - 1} pools · provide liquidity, earn yield`)}`,
+        columns: 1,
+        rows,
+      }),
+      data: { poolCount: rows.length - 1 },
+    };
+  },
+};
+
 export const magicTools: ToolDefinition[] = [
+  magicStake,
+  magicUnstake,
+  magicClaim,
+  magicReferral,
+  magicFlp,
+  magicFlpDeposit,
+  magicFlpWithdraw,
+  magicFlpClaim,
   magicVault,
   magicSettle,
   magicStatus,

@@ -41,6 +41,7 @@ interface ConfigFileData {
   withdraw_fee_payer_path?: string;
   withdraw_fee_payer_top_up_lamports?: number;
   compute_unit_price?: number;
+  er_priority_fee?: number;
   max_collateral_per_trade?: number;
   max_position_size?: number;
   max_leverage?: number;
@@ -509,6 +510,11 @@ export function loadConfig(): MagicConfig {
     withdrawFeePayerPath,
     withdrawFeePayerTopUpLamports,
     computeUnitPrice: safeEnvNumber('COMPUTE_UNIT_PRICE', file.compute_unit_price ?? 50_000),
+    // Priority fee (µLamports/CU) for ER TRADES specifically. The ER is a single
+    // sequencer with NO fee auction, so a priority fee there is pure waste —
+    // default 0 (cheapest: just the fixed base fee). Bump via MAGIC_ER_PRIORITY_FEE
+    // only if trades ever fail to land on the ER.
+    erPriorityFee: safeEnvNumber('MAGIC_ER_PRIORITY_FEE', file.er_priority_fee ?? 0),
     // Strict parse: an unrecognised value (e.g. `disable`) throws instead
     // of silently falling back to true. A safety-critical gate must never
     // mis-interpret user intent.

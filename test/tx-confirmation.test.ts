@@ -29,7 +29,12 @@ function stubOpenFetch(signer: Keypair): void {
 
 const openArgs = { inputTokenSymbol: 'USDC', outputTokenSymbol: 'SOL', inputAmountUi: '5', leverage: 2, tradeType: 'LONG' as const };
 
-beforeEach(() => initSigningGuard({ maxLeverage: 0, maxCollateralPerTrade: 0, maxPositionSize: 0, maxTradesPerMinute: 0, minDelayBetweenTradesMs: 0 }));
+// These verify the STRICT confirm-before-success path (instant/optimistic OFF).
+beforeEach(() => {
+  process.env.MAGIC_INSTANT = '0';
+  initSigningGuard({ maxLeverage: 0, maxCollateralPerTrade: 0, maxPositionSize: 0, maxTradesPerMinute: 0, minDelayBetweenTradesMs: 0 });
+});
+afterEach(() => { delete process.env.MAGIC_INSTANT; });
 afterEach(() => vi.restoreAllMocks());
 
 describe('signAndSubmit on-chain confirmation', () => {

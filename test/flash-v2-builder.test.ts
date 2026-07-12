@@ -12,10 +12,13 @@ beforeEach(() => {
   // doesn't rate-limit them. (Production always calls initSigningGuard with the
   // user's real caps.)
   initSigningGuard({ maxLeverage: 0, maxCollateralPerTrade: 0, maxPositionSize: 0, maxTradesPerMinute: 0, minDelayBetweenTradesMs: 0 });
+  // Verify the strict confirm path here (optimistic/instant is default-on in prod).
+  process.env.MAGIC_INSTANT = '0';
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env.MAGIC_INSTANT;
 });
 
 function serializedV0TxBase64(signer: Keypair): string {
@@ -127,24 +130,24 @@ describe('FlashV2BuilderClient preview-only builders', () => {
 });
 
 describe('FlashV2BuilderClient routing semantics', () => {
-  it('submits trading builders through the V2 trading submit endpoint', async () => {
+  it('builds via flashapi but FIRES trading txs directly to the ER (bypassing the blocking flashapi submit)', async () => {
     const signer = Keypair.generate();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/transaction-builder/open-position')) {
         return new Response(JSON.stringify({ transactionBase64: serializedV0TxBase64(signer) }), { status: 200 });
       }
-      if (url.endsWith('/transaction-builder/submit-transaction')) {
-        return new Response(JSON.stringify({ signature: '5UQ4J7Q8i6QeZs7vT5gW4JrUqg1GJx4YkJx9T6fW3cP1tP2o8ZrHq4p6h2fLz8cG2wQ1eVn3mYpL9bD7sR1mA2', rpc: 'https://flashtrade.magicblock.app/' }), { status: 200 });
-      }
       return new Response(JSON.stringify({}), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
-    const sendRawSpy = vi.spyOn(connection, 'sendRawTransaction');
-    // signAndSubmit now confirms on-chain before returning — mock a confirmed
-    // status so the confirm poll resolves immediately without a real RPC call.
+    // Direct-to-ER submit is fire-and-forget (not awaited): mock it so the fired
+    // request resolves instead of hitting a real endpoint.
+    const sendRawSpy = vi.spyOn(connection, 'sendRawTransaction').mockResolvedValue(
+      '5UQ4J7Q8i6QeZs7vT5gW4JrUqg1GJx4YkJx9T6fW3cP1tP2o8ZrHq4p6h2fLz8cG2wQ1eVn3mYpL9bD7sR1mA2',
+    );
+    // Confirmation is polled on the ER — mock a confirmed status so it resolves.
     vi.spyOn(connection, 'getSignatureStatus').mockResolvedValue({ value: { slot: 1, confirmations: 1, err: null, confirmationStatus: 'confirmed' } } as never);
-    const client = new FlashV2BuilderClient({ baseUrl: 'https://flashapi.trade', l1Connection: connection });
+    const client = new FlashV2BuilderClient({ baseUrl: 'https://flashapi.trade', l1Connection: connection, erConnection: connection });
 
     const result = await client.signAndSubmit('openPosition', {
       inputTokenSymbol: 'USDC',
@@ -156,11 +159,15 @@ describe('FlashV2BuilderClient routing semantics', () => {
 
     expect('previewOnly' in result).toBe(false);
     expect((result as { confirmation?: string }).confirmation).toBe('confirmed');
+    // ONLY the build hits flashapi — the tx is fired straight to the ER, NOT via
+    // flashapi's blocking /submit-transaction (the ~18s latency bug).
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
       'https://flashapi.trade/transaction-builder/open-position',
-      'https://flashapi.trade/transaction-builder/submit-transaction',
     ]);
-    expect(sendRawSpy).not.toHaveBeenCalled();
+    expect(sendRawSpy).toHaveBeenCalledTimes(1);
+    // The returned signature is derived locally from the signed tx (we don't wait
+    // on the blocking submit response to learn it).
+    expect((result as { signature?: string }).signature).toBeTruthy();
   });
 
   it('routes funds builders to Solana RPC instead of the V2 trading submit endpoint', async () => {
