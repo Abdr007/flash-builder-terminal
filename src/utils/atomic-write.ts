@@ -18,18 +18,24 @@
  */
 import { writeFileSync, renameSync, unlinkSync, mkdirSync, chmodSync, openSync, fsyncSync, closeSync } from 'fs';
 import { dirname, basename, join } from 'path';
+import { randomBytes } from 'crypto';
 
 let seq = 0;
 
 export function atomicWriteFileSync(target: string, data: string | Uint8Array, mode = 0o600): void {
   const dir = dirname(target);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // PID + monotonic counter → unique temp name without Math.random.
-  const tmp = join(dir, `.${basename(target)}.tmp.${process.pid}.${seq++}`);
+  // Temp file lives in the TARGET's own (0700) directory — never the shared OS
+  // temp dir — and its name mixes PID + counter + a cryptographically-random
+  // suffix so it is UNPREDICTABLE (no symlink/TOCTOU pre-creation attack) and
+  // never collides across processes.
+  const tmp = join(dir, `.${basename(target)}.tmp.${process.pid}.${seq++}.${randomBytes(8).toString('hex')}`);
   try {
     // Write + fsync the temp file so its bytes are durably on disk BEFORE the
     // rename, then fsync the directory so the rename entry itself is durable.
-    const fd = openSync(tmp, 'w', mode);
+    // `wx` = O_CREAT|O_EXCL: fail (not follow) if the path already exists, so a
+    // pre-planted symlink at `tmp` can never redirect the write.
+    const fd = openSync(tmp, 'wx', mode);
     try {
       writeFileSync(fd, data);
       fsyncSync(fd);
