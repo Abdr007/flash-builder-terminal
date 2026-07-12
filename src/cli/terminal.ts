@@ -2382,10 +2382,10 @@ export class MagicTerminal {
         this.config.erPriorityFee = Math.floor(n);
         try {
           // Persist (append if absent).
-          void import('../config/index.js').then(({ syncEnvLine, userEnvFilePath }) => import('node:fs').then(({ existsSync, appendFileSync }) => {
+          void import('../config/index.js').then(({ syncEnvLine, userEnvFilePath }) => import('node:fs').then(({ appendFileSync }) => {
             if (!syncEnvLine('MAGIC_ER_PRIORITY_FEE', String(Math.floor(n)))) {
               const p = userEnvFilePath();
-              if (existsSync(p)) appendFileSync(p, `MAGIC_ER_PRIORITY_FEE=${Math.floor(n)}\n`, { mode: 0o600 });
+              appendFileSync(p, `MAGIC_ER_PRIORITY_FEE=${Math.floor(n)}\n`, { mode: 0o600 });
             }
           }));
         } catch { /* best-effort */ }
@@ -2422,7 +2422,7 @@ export class MagicTerminal {
     // Persist to ~/.magic/.env (loaded into process.env on next startup) so the
     // preference sticks — AND mutate the live process.env so it takes effect now.
     const { syncEnvLine, userEnvFilePath } = await import('../config/index.js');
-    const { existsSync, appendFileSync } = await import('node:fs');
+    const { appendFileSync } = await import('node:fs');
     const set = (k: string, v: boolean): void => {
       const val = v ? '1' : '0';
       process.env[k] = val; // '0' is not '1', so the trade path reads it as off
@@ -2431,7 +2431,7 @@ export class MagicTerminal {
         // returns false, so append it.
         if (!syncEnvLine(k, val)) {
           const p = userEnvFilePath();
-          if (existsSync(p)) appendFileSync(p, `${k}=${val}\n`, { mode: 0o600 });
+          appendFileSync(p, `${k}=${val}\n`, { mode: 0o600 });
         }
       } catch { /* persist best-effort */ }
     };

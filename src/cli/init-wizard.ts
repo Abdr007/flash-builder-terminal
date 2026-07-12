@@ -241,7 +241,18 @@ export async function runInitWizard(
   // If the caller already has a non-public RPC (e.g. Helius from config.json),
   // make THAT the [enter] default so re-running `init` never silently downgrades
   // a paid endpoint to rate-limited public mainnet.
-  const isPublicRpc = (u?: string): boolean => !u || /api\.(mainnet-beta|devnet)\.solana\.com/i.test(u);
+  const isPublicRpc = (u?: string): boolean => {
+    if (!u) return true;
+    // Check the HOSTNAME, not a substring — a substring match would treat
+    // `https://evil.com/api.mainnet-beta.solana.com` as "public" and let it
+    // through as a safe default.
+    try {
+      const host = new URL(u).hostname.toLowerCase();
+      return host === 'api.mainnet-beta.solana.com' || host === 'api.devnet.solana.com';
+    } catch {
+      return true; // unparseable → treat as public (fall back to the safe default)
+    }
+  };
   const rpcDefault = opts.defaultRpc && !isPublicRpc(opts.defaultRpc) ? opts.defaultRpc : publicRpc;
   const rpcHost = (u: string): string => { try { return new URL(u).hostname; } catch { return u; } };
 
